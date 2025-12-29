@@ -1,21 +1,32 @@
 // backend/controllers/scheduleController.js
-// UPDATED - Added manual scheduling and unscheduled details
+// FINAL CLEAN VERSION - No duplicates, all functions exported properly
 
 const Appointment = require("../models/Appointment");
 const CareReceiver = require("../models/CareReceiver");
 const CareGiver = require("../models/CareGiver");
+const Availability = require("../models/Availability");
 const {
   scheduleForCareReceiver,
   bulkSchedule,
   findBestCareGiver,
 } = require("../services/schedulingService");
-const Availability = require("../models/Availability");
 const notificationService = require("../services/notificationService");
+
+// =============================================================================
+// SCHEDULE GENERATION (POST ONLY)
+// =============================================================================
 
 // @desc    Generate schedule for care receiver(s)
 // @route   POST /api/schedule/generate
 // @access  Private
 exports.generateSchedule = async (req, res, next) => {
+  console.log("\n========================================");
+  console.log("🟢 POST /schedule/generate CALLED");
+  console.log("========================================");
+  console.log("⚠️  THIS IS THE ONLY ENDPOINT THAT GENERATES");
+  console.log("Request body:", JSON.stringify(req.body, null, 2));
+  console.log("🔄 STARTING SCHEDULE GENERATION...");
+
   try {
     const { careReceiverIds, careReceiverId, startDate, endDate } = req.body;
 
@@ -29,8 +40,15 @@ exports.generateSchedule = async (req, res, next) => {
       });
     }
 
+    // FIXED: Set start to beginning of day, end to END of day
     const start = new Date(startDate);
+    start.setHours(0, 0, 0, 0); // Start of day
+
     const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999); // END of day (includes entire day)
+
+    console.log("Start date:", start.toISOString());
+    console.log("End date:", end.toISOString());
 
     if (start > end) {
       return res.status(400).json({
@@ -45,10 +63,13 @@ exports.generateSchedule = async (req, res, next) => {
     let results;
 
     if (careReceiverId) {
+      console.log(`📝 Generating for single care receiver: ${careReceiverId}`);
       results = [await scheduleForCareReceiver(careReceiverId, start, end)];
     } else if (careReceiverIds && careReceiverIds.length > 0) {
+      console.log(`📝 Generating for ${careReceiverIds.length} care receivers`);
       results = await bulkSchedule(careReceiverIds, start, end);
     } else {
+      console.log("📝 Generating for ALL active care receivers");
       const allCareReceivers = await CareReceiver.find({ isActive: true });
       const ids = allCareReceivers.map((cr) => cr._id.toString());
       results = await bulkSchedule(ids, start, end);
@@ -63,21 +84,44 @@ exports.generateSchedule = async (req, res, next) => {
       careReceiversProcessed: results.length,
     };
 
+    console.log("✅ GENERATION COMPLETE");
+    console.log(`   Scheduled: ${summary.totalScheduled}`);
+    console.log(`   Failed: ${summary.totalFailed}`);
+    console.log("========================================\n");
+
+    // Create notification
+    try {
+      await notificationService.notifyScheduleGenerated(req.user?._id, summary);
+    } catch (notifError) {
+      console.error("Failed to create notification:", notifError.message);
+    }
+
     res.json({
       success: true,
       data: { results, summary },
       message: `Scheduled ${summary.totalScheduled} appointments, ${summary.totalFailed} failed`,
     });
   } catch (error) {
-    console.error("Schedule generation error:", error);
+    console.error("❌ Error in generateSchedule:", error);
+    console.log("========================================\n");
     next(error);
   }
 };
+
+// =============================================================================
+// READ OPERATIONS (GET ONLY - NO GENERATION)
+// =============================================================================
 
 // @desc    Get all appointments with filters
 // @route   GET /api/schedule/appointments
 // @access  Private
 exports.getAllAppointments = async (req, res, next) => {
+  console.log("\n========================================");
+  console.log("🔵 GET /schedule/appointments CALLED");
+  console.log("========================================");
+  console.log("Query params:", req.query);
+  console.log("⚠️  THIS ENDPOINT ONLY FETCHES - NO GENERATION");
+
   try {
     const {
       startDate,
@@ -113,6 +157,7 @@ exports.getAllAppointments = async (req, res, next) => {
       query.status = status;
     }
 
+    console.log("📥 Fetching appointments from database...");
     const total = await Appointment.countDocuments(query);
 
     const appointments = await Appointment.find(query)
@@ -122,6 +167,12 @@ exports.getAllAppointments = async (req, res, next) => {
       .sort({ date: 1, startTime: 1 })
       .limit(limit * 1)
       .skip((page - 1) * limit);
+
+    console.log(
+      `✅ Fetched ${appointments.length} appointments (total: ${total})`
+    );
+    console.log("✅ NO GENERATION OCCURRED");
+    console.log("========================================\n");
 
     res.json({
       success: true,
@@ -135,6 +186,8 @@ exports.getAllAppointments = async (req, res, next) => {
       },
     });
   } catch (error) {
+    console.error("❌ Error in getAllAppointments:", error.message);
+    console.log("========================================\n");
     next(error);
   }
 };
@@ -143,6 +196,12 @@ exports.getAllAppointments = async (req, res, next) => {
 // @route   GET /api/schedule/unscheduled
 // @access  Private
 exports.getUnscheduled = async (req, res, next) => {
+  console.log("\n========================================");
+  console.log("🔵 GET /schedule/unscheduled CALLED");
+  console.log("========================================");
+  console.log("Query params:", req.query);
+  console.log("⚠️  THIS ENDPOINT ONLY CALCULATES - NO GENERATION");
+
   try {
     const { startDate, endDate } = req.query;
 
@@ -159,7 +218,10 @@ exports.getUnscheduled = async (req, res, next) => {
     const start = new Date(startDate);
     const end = new Date(endDate);
 
-    const careReceivers = await CareReceiver.find({ isActive: true });
+    console.log("📥 Calculating unscheduled appointments...");
+
+    // FRESH: Query all active care receivers
+    const careReceivers = await CareReceiver.find({ isActive: true }).lean();
     const unscheduled = [];
 
     for (const cr of careReceivers) {
@@ -179,7 +241,7 @@ exports.getUnscheduled = async (req, res, next) => {
       const existingAppointments = await Appointment.find({
         careReceiver: cr._id,
         date: { $gte: start, $lte: end },
-      });
+      }).lean();
 
       // Build map of existing appointments by date and visit number
       const appointmentMap = new Map();
@@ -198,7 +260,7 @@ exports.getUnscheduled = async (req, res, next) => {
           const visitKey = `${dateStr}-${visit.visitNumber}`;
 
           if (!appointmentMap.has(visitKey)) {
-            // This appointment is missing - try to find reason
+            // This appointment is missing - analyze why
             const reason = await findSchedulingFailureReason(cr, visit, date);
 
             details.push({
@@ -224,6 +286,7 @@ exports.getUnscheduled = async (req, res, next) => {
             dailyVisits: cr.dailyVisits.length,
             genderPreference: cr.genderPreference,
             address: cr.address,
+            coordinates: cr.coordinates,
           },
           expected: dates.length * cr.dailyVisits.length,
           actual: existingAppointments.length,
@@ -233,6 +296,12 @@ exports.getUnscheduled = async (req, res, next) => {
       }
     }
 
+    console.log(
+      `✅ Calculated ${unscheduled.length} care receivers with unscheduled appointments`
+    );
+    console.log("✅ NO GENERATION OCCURRED");
+    console.log("========================================\n");
+
     res.json({
       success: true,
       data: {
@@ -241,62 +310,36 @@ exports.getUnscheduled = async (req, res, next) => {
       },
     });
   } catch (error) {
+    console.error("❌ Error in getUnscheduled:", error.message);
+    console.log("========================================\n");
     next(error);
   }
 };
 
-// Helper function to find why scheduling failed
-async function findSchedulingFailureReason(careReceiver, visit, date) {
-  try {
-    // Calculate end time
-    const [hours, minutes] = visit.preferredTime.split(":").map(Number);
-    const endMinutes = minutes + visit.duration;
-    const endTime = `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
+// ADD THIS TO scheduleController.js
+// Place it after the getUnscheduled function
 
-    // Try to find a care giver
-    const bestCareGiver = await findBestCareGiver(
-      careReceiver,
-      visit,
-      date,
-      visit.preferredTime,
-      endTime
-    );
-
-    if (bestCareGiver.careGiver) {
-      return "Available care giver found but not auto-scheduled (may need manual review)";
-    }
-
-    return bestCareGiver.reason || "No available care giver found";
-  } catch (error) {
-    return "Unable to determine reason";
-  }
-}
-
-// @desc    Find available care givers for manual scheduling
-// @route   POST /api/schedule/find-available
+// @desc    Analyze why a specific appointment couldn't be scheduled
+// @route   POST /api/schedule/analyze-unscheduled
 // @access  Private
-exports.findAvailableForManual = async (req, res, next) => {
-  try {
-    const {
-      careReceiverId,
-      date,
-      startTime,
-      endTime,
-      requirements,
-      doubleHanded,
-    } = req.body;
+exports.analyzeUnscheduled = async (req, res, next) => {
+  console.log("\n🔍 POST /schedule/analyze-unscheduled CALLED");
 
-    if (!careReceiverId || !date || !startTime || !endTime) {
+  try {
+    const { careReceiver: careReceiverId, visit, date } = req.body;
+
+    if (!careReceiverId || !visit || !date) {
       return res.status(400).json({
         success: false,
         error: {
-          message: "Missing required fields",
+          message: "Missing required fields: careReceiver, visit, date",
           code: "MISSING_FIELDS",
         },
       });
     }
 
-    const careReceiver = await CareReceiver.findById(careReceiverId);
+    // Get care receiver
+    const careReceiver = await CareReceiver.findById(careReceiverId).lean();
     if (!careReceiver) {
       return res.status(404).json({
         success: false,
@@ -307,85 +350,173 @@ exports.findAvailableForManual = async (req, res, next) => {
       });
     }
 
-    const appointmentDate = new Date(date);
+    // Calculate end time
+    const [hours, minutes] = visit.preferredTime.split(":").map(Number);
+    const endMinutes = minutes + visit.duration;
+    const endTime = `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
 
-    // Find all care givers with required skills
-    const query = { isActive: true };
-    if (requirements && requirements.length > 0) {
-      query.skills = { $all: requirements };
-    }
+    // Get all active care givers
+    const allCareGivers = await CareGiver.find({ isActive: true }).lean();
 
-    const potentialCareGivers = await CareGiver.find(query);
+    // Analyze each care giver
+    const careGiverAnalysis = [];
 
-    // Check each care giver's availability
-    const availableCareGivers = [];
+    for (const cg of allCareGivers) {
+      const analysis = {
+        _id: cg._id,
+        name: cg.name,
+        email: cg.email,
+        phone: cg.phone,
+        skills: cg.skills,
+        gender: cg.gender,
+        canAssign: true,
+        rejectionReasons: [],
+        matchScore: 100,
+        distance: null,
+      };
 
-    for (const cg of potentialCareGivers) {
-      const availabilityCheck = await checkCareGiverAvailability(
-        cg,
+      // Check skills
+      const normalizedCgSkills = cg.skills.map((s) =>
+        s.toLowerCase().replace(/ /g, "_")
+      );
+      const normalizedRequired = (visit.requirements || []).map((r) =>
+        r.toLowerCase().replace(/ /g, "_")
+      );
+
+      const missingSkills = normalizedRequired.filter(
+        (req) => !normalizedCgSkills.includes(req)
+      );
+
+      if (missingSkills.length > 0) {
+        analysis.canAssign = false;
+        analysis.rejectionReasons.push(
+          `Missing required skills: ${missingSkills.map((s) => s.replace(/_/g, " ")).join(", ")}`
+        );
+        analysis.matchScore -= 30;
+      }
+
+      // Check gender preference
+      if (
+        careReceiver.genderPreference &&
+        careReceiver.genderPreference !== "no_preference" &&
+        cg.gender.toLowerCase() !== careReceiver.genderPreference.toLowerCase()
+      ) {
+        analysis.rejectionReasons.push(
+          `Gender mismatch (preference: ${careReceiver.genderPreference}, care giver: ${cg.gender})`
+        );
+        analysis.matchScore -= 10;
+      }
+
+      // Check availability
+      const appointmentDate = new Date(date);
+      const availabilityCheck = await checkCareGiverAvailabilityFresh(
+        cg._id,
         appointmentDate,
-        startTime,
+        visit.preferredTime,
         endTime,
         careReceiver
       );
 
-      if (availabilityCheck.available) {
-        availableCareGivers.push({
-          ...cg.toObject(),
-          distance: availabilityCheck.distance,
-          travelTime: availabilityCheck.travelTime,
-          availabilityDetails: availabilityCheck.details,
-        });
+      if (!availabilityCheck.available) {
+        analysis.canAssign = false;
+        analysis.rejectionReasons.push(availabilityCheck.reason);
+        analysis.matchScore -= 40;
+      } else {
+        analysis.distance = availabilityCheck.distance;
       }
+
+      // Ensure score is between 0-100
+      analysis.matchScore = Math.max(0, Math.min(100, analysis.matchScore));
+
+      careGiverAnalysis.push(analysis);
     }
+
+    // Sort: Available first, then by match score
+    careGiverAnalysis.sort((a, b) => {
+      if (a.canAssign !== b.canAssign) {
+        return a.canAssign ? -1 : 1;
+      }
+      return b.matchScore - a.matchScore;
+    });
+
+    console.log(`✅ Analyzed ${careGiverAnalysis.length} care givers`);
+    console.log(
+      `   Can assign: ${careGiverAnalysis.filter((a) => a.canAssign).length}`
+    );
 
     res.json({
       success: true,
       data: {
-        availableCareGivers,
-        total: availableCareGivers.length,
-        careReceiverPreferences: {
+        careReceiver: {
+          id: careReceiver._id,
+          name: careReceiver.name,
           genderPreference: careReceiver.genderPreference,
-          requirements: requirements,
-          doubleHanded: doubleHanded,
+        },
+        visit: visit,
+        date: date,
+        careGiverAnalysis: careGiverAnalysis,
+        summary: {
+          total: careGiverAnalysis.length,
+          available: careGiverAnalysis.filter((a) => a.canAssign).length,
+          unavailable: careGiverAnalysis.filter((a) => !a.canAssign).length,
         },
       },
     });
   } catch (error) {
+    console.error("❌ Error in analyzeUnscheduled:", error);
     next(error);
   }
 };
 
-// Helper to check care giver availability with details
-async function checkCareGiverAvailability(
-  careGiver,
+// Helper function (reuse the one we already have)
+async function checkCareGiverAvailabilityFresh(
+  careGiverId,
   date,
   startTime,
   endTime,
   careReceiver
 ) {
-  const Availability = require("../models/Availability");
+  const careGiver = await CareGiver.findById(careGiverId).lean();
 
-  // Check if active
-  if (!careGiver.isActive) {
-    return { available: false, reason: "Inactive" };
+  if (!careGiver || !careGiver.isActive) {
+    return {
+      available: false,
+      reason: careGiver ? "Inactive" : "Care giver not found",
+    };
   }
 
-  // Get availability
-  const availability = await Availability.getCurrentForCareGiver(
-    careGiver._id,
-    date
-  );
+  let availability = await Availability.findOne({
+    careGiver: careGiverId,
+    effectiveFrom: { $lte: date },
+    $or: [{ effectiveTo: null }, { effectiveTo: { $gte: date } }],
+    isActive: true,
+  }).lean();
+
+  if (
+    !availability &&
+    careGiver.availability &&
+    careGiver.availability.length > 0
+  ) {
+    availability = {
+      schedule: careGiver.availability,
+      timeOff: careGiver.timeOff || [],
+    };
+  }
+
   if (!availability) {
     return { available: false, reason: "No availability schedule" };
   }
 
-  // Check time off
-  if (availability.isOnTimeOff(date)) {
+  const isOnTimeOff = (availability.timeOff || []).some((to) => {
+    const startDate = new Date(to.startDate);
+    const endDate = new Date(to.endDate);
+    return date >= startDate && date <= endDate;
+  });
+
+  if (isOnTimeOff) {
     return { available: false, reason: "On time off" };
   }
 
-  // Check working hours
   const dayOfWeek = date.toLocaleDateString("en-GB", { weekday: "long" });
   const daySchedule = availability.schedule.find(
     (s) => s.dayOfWeek === dayOfWeek
@@ -403,17 +534,16 @@ async function checkCareGiverAvailability(
     return { available: false, reason: "Outside working hours" };
   }
 
-  // Check conflicts
   const startOfDay = new Date(date);
   startOfDay.setHours(0, 0, 0, 0);
   const endOfDay = new Date(date);
   endOfDay.setHours(23, 59, 59, 999);
 
   const conflicts = await Appointment.find({
-    $or: [{ careGiver: careGiver._id }, { secondaryCareGiver: careGiver._id }],
+    $or: [{ careGiver: careGiverId }, { secondaryCareGiver: careGiverId }],
     date: { $gte: startOfDay, $lte: endOfDay },
     status: { $in: ["scheduled", "in_progress"] },
-  });
+  }).lean();
 
   for (const apt of conflicts) {
     if (
@@ -425,9 +555,11 @@ async function checkCareGiverAvailability(
     }
   }
 
-  // Calculate distance
   let distance = null;
-  if (careGiver.coordinates && careReceiver.coordinates) {
+  if (
+    careGiver.coordinates?.coordinates &&
+    careReceiver.coordinates?.coordinates
+  ) {
     distance = calculateDistance(
       careGiver.coordinates.coordinates,
       careReceiver.coordinates.coordinates
@@ -437,19 +569,13 @@ async function checkCareGiverAvailability(
   return {
     available: true,
     distance: distance,
-    travelTime: distance ? Math.ceil((distance / 40) * 60) : null, // Assume 40 km/h average
-    details: {
-      workingHours: daySchedule.slots[0],
-      conflicts: conflicts.length,
-    },
   };
 }
 
-// Calculate distance between two coordinates
 function calculateDistance(coords1, coords2) {
   const [lon1, lat1] = coords1;
   const [lon2, lat2] = coords2;
-  const R = 6371; // Earth's radius in km
+  const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
   const a =
@@ -461,175 +587,6 @@ function calculateDistance(coords1, coords2) {
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
 }
-
-// @desc    Create manual appointment
-// @route   POST /api/schedule/appointments/manual
-// @access  Private
-exports.createManualAppointment = async (req, res, next) => {
-  try {
-    const {
-      careReceiverId,
-      careGiverId,
-      secondaryCareGiverId,
-      date,
-      startTime,
-      endTime,
-      duration,
-      visitNumber,
-      requirements,
-      doubleHanded,
-      priority,
-      notes,
-    } = req.body;
-
-    // Validate required fields
-    if (!careReceiverId || !careGiverId || !date || !startTime || !endTime) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          message: "Missing required fields",
-          code: "MISSING_FIELDS",
-        },
-      });
-    }
-
-    // Check if care receiver exists
-    const careReceiver = await CareReceiver.findById(careReceiverId);
-    if (!careReceiver) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          message: "Care receiver not found",
-          code: "CARE_RECEIVER_NOT_FOUND",
-        },
-      });
-    }
-
-    // Check if care giver exists
-    const careGiver = await CareGiver.findById(careGiverId);
-    if (!careGiver) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          message: "Care giver not found",
-          code: "CARE_GIVER_NOT_FOUND",
-        },
-      });
-    }
-
-    // Create appointment
-    const appointment = await Appointment.create({
-      careReceiver: careReceiverId,
-      careGiver: careGiverId,
-      secondaryCareGiver: secondaryCareGiverId || undefined,
-      date: new Date(date),
-      startTime,
-      endTime,
-      duration: duration || 60,
-      visitNumber: visitNumber || 1,
-      requirements: requirements || [],
-      doubleHanded: doubleHanded || false,
-      priority: priority || 3,
-      notes: notes || "",
-      status: "scheduled",
-      schedulingMetadata: {
-        scheduledAt: new Date(),
-        scheduledBy: req.user._id,
-        schedulingMethod: "manual",
-      },
-    });
-
-    await appointment.populate("careReceiver careGiver secondaryCareGiver");
-
-    res.status(201).json({
-      success: true,
-      data: { appointment },
-      message: "Appointment created successfully",
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// @desc    Update appointment status
-// @route   PATCH /api/schedule/appointments/:id/status
-// @access  Private
-exports.updateAppointmentStatus = async (req, res, next) => {
-  try {
-    const { status, cancellationReason } = req.body;
-
-    if (!status) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          message: "Status is required",
-          code: "MISSING_STATUS",
-        },
-      });
-    }
-
-    const appointment = await Appointment.findById(req.params.id);
-
-    if (!appointment) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          message: "Appointment not found",
-          code: "APPOINTMENT_NOT_FOUND",
-        },
-      });
-    }
-
-    appointment.status = status;
-
-    if (status === "cancelled" && cancellationReason) {
-      appointment.cancellationReason = cancellationReason;
-    }
-
-    if (status === "completed") {
-      appointment.completedAt = new Date();
-      appointment.completedBy = req.user._id;
-    }
-
-    await appointment.save();
-
-    res.json({
-      success: true,
-      data: { appointment },
-      message: "Appointment status updated successfully",
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// @desc    Delete appointment
-// @route   DELETE /api/schedule/appointments/:id
-// @access  Private
-exports.deleteAppointment = async (req, res, next) => {
-  try {
-    const appointment = await Appointment.findById(req.params.id);
-
-    if (!appointment) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          message: "Appointment not found",
-          code: "APPOINTMENT_NOT_FOUND",
-        },
-      });
-    }
-
-    await Appointment.findByIdAndDelete(req.params.id);
-
-    res.json({
-      success: true,
-      message: "Appointment deleted successfully",
-    });
-  } catch (error) {
-    next(error);
-  }
-};
 
 // @desc    Get schedule statistics
 // @route   GET /api/schedule/stats
@@ -715,6 +672,10 @@ exports.getFreshCareReceiverData = async (req, res, next) => {
     next(error);
   }
 };
+
+// =============================================================================
+// MANUAL SCHEDULING (POST - CREATES APPOINTMENTS)
+// =============================================================================
 
 // @desc    Find available care givers for manual scheduling (FRESH DATA)
 // @route   POST /api/schedule/find-available
@@ -892,6 +853,221 @@ exports.findAvailableForManual = async (req, res, next) => {
   }
 };
 
+// @desc    Create manual appointment
+// @route   POST /api/schedule/appointments/manual
+// @access  Private
+exports.createManualAppointment = async (req, res, next) => {
+  try {
+    const {
+      careReceiverId,
+      careGiverId,
+      secondaryCareGiverId,
+      date,
+      startTime,
+      endTime,
+      duration,
+      visitNumber,
+      requirements,
+      doubleHanded,
+      priority,
+      notes,
+    } = req.body;
+
+    // Validate required fields
+    if (!careReceiverId || !careGiverId || !date || !startTime || !endTime) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          message: "Missing required fields",
+          code: "MISSING_FIELDS",
+        },
+      });
+    }
+
+    // Verify care receiver exists
+    const careReceiver = await CareReceiver.findById(careReceiverId);
+    if (!careReceiver) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          message: "Care receiver not found",
+          code: "CARE_RECEIVER_NOT_FOUND",
+        },
+      });
+    }
+
+    // Verify care giver exists
+    const careGiver = await CareGiver.findById(careGiverId);
+    if (!careGiver) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          message: "Care giver not found",
+          code: "CARE_GIVER_NOT_FOUND",
+        },
+      });
+    }
+
+    // Create appointment
+    const appointment = await Appointment.create({
+      careReceiver: careReceiverId,
+      careGiver: careGiverId,
+      secondaryCareGiver: secondaryCareGiverId || undefined,
+      date: new Date(date),
+      startTime,
+      endTime,
+      duration: duration || 60,
+      visitNumber: visitNumber || 1,
+      requirements: requirements || [],
+      doubleHanded: doubleHanded || false,
+      priority: priority || 3,
+      notes: notes || "",
+      status: "scheduled",
+      schedulingMetadata: {
+        scheduledAt: new Date(),
+        scheduledBy: req.user?._id,
+        schedulingMethod: "manual",
+      },
+    });
+
+    await appointment.populate("careReceiver careGiver secondaryCareGiver");
+
+    // Create notification
+    try {
+      await notificationService.notifyManualSchedule(req.user?._id, {
+        appointmentId: appointment._id,
+        careReceiverName: careReceiver.name,
+        careGiverName: careGiver.name,
+        date: date,
+        time: startTime,
+      });
+    } catch (notifError) {
+      console.error("Failed to create notification:", notifError.message);
+    }
+
+    res.status(201).json({
+      success: true,
+      data: { appointment },
+      message: "Appointment created successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// =============================================================================
+// UPDATE/DELETE OPERATIONS
+// =============================================================================
+
+// @desc    Update appointment status
+// @route   PATCH /api/schedule/appointments/:id/status
+// @access  Private
+exports.updateAppointmentStatus = async (req, res, next) => {
+  try {
+    const { status, cancellationReason } = req.body;
+
+    if (!status) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          message: "Status is required",
+          code: "MISSING_STATUS",
+        },
+      });
+    }
+
+    const appointment = await Appointment.findById(req.params.id);
+
+    if (!appointment) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          message: "Appointment not found",
+          code: "APPOINTMENT_NOT_FOUND",
+        },
+      });
+    }
+
+    appointment.status = status;
+
+    if (status === "cancelled" && cancellationReason) {
+      appointment.cancellationReason = cancellationReason;
+    }
+
+    if (status === "completed") {
+      appointment.completedAt = new Date();
+      appointment.completedBy = req.user?._id;
+    }
+
+    await appointment.save();
+
+    res.json({
+      success: true,
+      data: { appointment },
+      message: "Appointment status updated successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Delete appointment
+// @route   DELETE /api/schedule/appointments/:id
+// @access  Private
+exports.deleteAppointment = async (req, res, next) => {
+  try {
+    const appointment = await Appointment.findById(req.params.id);
+
+    if (!appointment) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          message: "Appointment not found",
+          code: "APPOINTMENT_NOT_FOUND",
+        },
+      });
+    }
+
+    await Appointment.findByIdAndDelete(req.params.id);
+
+    res.json({
+      success: true,
+      message: "Appointment deleted successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// =============================================================================
+// HELPER FUNCTIONS (DEFINED ONCE)
+// =============================================================================
+
+// Helper to find why scheduling failed (ANALYSIS ONLY - NO CREATION)
+async function findSchedulingFailureReason(careReceiver, visit, date) {
+  try {
+    const [hours, minutes] = visit.preferredTime.split(":").map(Number);
+    const endMinutes = minutes + visit.duration;
+    const endTime = `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
+
+    const bestCareGiver = await findBestCareGiver(
+      careReceiver,
+      visit,
+      date,
+      visit.preferredTime,
+      endTime
+    );
+
+    if (bestCareGiver.careGiver) {
+      return "Available care giver found but not auto-scheduled";
+    }
+
+    return bestCareGiver.reason || "No available care giver found";
+  } catch (error) {
+    return "Unable to determine reason";
+  }
+}
+
 // Helper to check care giver availability with FRESH data
 async function checkCareGiverAvailabilityFresh(
   careGiverId,
@@ -1040,12 +1216,25 @@ function calculateDistance(coords1, coords2) {
   return R * c;
 }
 
-// @desc    Get unscheduled appointments with detailed reasons (FRESH DATA)
-// @route   GET /api/schedule/unscheduled
+// Calculate duration between start and end time
+function calculateDuration(startTime, endTime) {
+  const [startHours, startMinutes] = startTime.split(":").map(Number);
+  const [endHours, endMinutes] = endTime.split(":").map(Number);
+  return endHours * 60 + endMinutes - (startHours * 60 + startMinutes);
+}
+
+// @desc    Validate all scheduled appointments and detect conflicts
+// @route   POST /api/schedule/validate
 // @access  Private
-exports.getUnscheduled = async (req, res, next) => {
+// FIXED validateSchedule - Only flags REAL conflicts
+// Replace the validateSchedule function in scheduleController.js
+
+exports.validateSchedule = async (req, res, next) => {
+  console.log("\n🔍 POST /schedule/validate CALLED");
+  console.log("Validating all scheduled appointments...");
+
   try {
-    const { startDate, endDate } = req.query;
+    const { startDate, endDate } = req.body;
 
     if (!startDate || !endDate) {
       return res.status(400).json({
@@ -1058,269 +1247,208 @@ exports.getUnscheduled = async (req, res, next) => {
     }
 
     const start = new Date(startDate);
+    start.setHours(0, 0, 0, 0);
+
     const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
 
-    // FRESH: Query all active care receivers
-    const careReceivers = await CareReceiver.find({ isActive: true }).lean();
-    const unscheduled = [];
+    // Get all scheduled appointments in range
+    const appointments = await Appointment.find({
+      date: { $gte: start, $lte: end },
+      status: { $in: ["scheduled", "needs_reassignment"] },
+    })
+      .populate("careReceiver", "name dailyVisits genderPreference coordinates")
+      .populate(
+        "careGiver",
+        "name email availability timeOff coordinates isActive"
+      )
+      .populate(
+        "secondaryCareGiver",
+        "name email availability timeOff coordinates isActive"
+      );
 
-    for (const cr of careReceivers) {
-      if (!cr.dailyVisits || cr.dailyVisits.length === 0) {
-        continue;
+    console.log(`Found ${appointments.length} appointments to validate`);
+
+    const invalidAppointments = [];
+    const validAppointments = [];
+    let updatedCount = 0;
+
+    for (const apt of appointments) {
+      const issues = [];
+
+      // ========================================
+      // CRITICAL CHECKS ONLY
+      // ========================================
+
+      // Check 1: Care receiver still exists
+      if (!apt.careReceiver) {
+        issues.push("Care receiver no longer exists");
       }
 
-      // Get all dates in range
-      const dates = [];
-      const currentDate = new Date(start);
-      while (currentDate <= end) {
-        dates.push(new Date(currentDate));
-        currentDate.setDate(currentDate.getDate() + 1);
+      // Check 2: Care giver still exists and is active
+      if (!apt.careGiver) {
+        issues.push("Care giver no longer exists");
+      } else if (!apt.careGiver.isActive) {
+        issues.push("Care giver is now inactive");
       }
 
-      // FRESH: Get existing appointments
-      const existingAppointments = await Appointment.find({
-        careReceiver: cr._id,
-        date: { $gte: start, $lte: end },
-      }).lean();
+      // Check 3: TIME OFF - Most important check
+      if (apt.careGiver && apt.careGiver.isActive && apt.careGiver.timeOff) {
+        const appointmentDate = new Date(apt.date);
 
-      // Build map of existing appointments
-      const appointmentMap = new Map();
-      existingAppointments.forEach((apt) => {
-        const dateKey = apt.date.toISOString().split("T")[0];
-        const visitKey = `${dateKey}-${apt.visitNumber}`;
-        appointmentMap.set(visitKey, apt);
-      });
+        for (const timeOff of apt.careGiver.timeOff) {
+          const timeOffStart = new Date(timeOff.startDate);
+          timeOffStart.setHours(0, 0, 0, 0);
 
-      // Find missing appointments with reasons
-      const details = [];
-      for (const date of dates) {
-        const dateStr = date.toISOString().split("T")[0];
+          const timeOffEnd = new Date(timeOff.endDate);
+          timeOffEnd.setHours(23, 59, 59, 999);
 
-        for (const visit of cr.dailyVisits) {
-          const visitKey = `${dateStr}-${visit.visitNumber}`;
-
-          if (!appointmentMap.has(visitKey)) {
-            const reason = await findSchedulingFailureReason(cr, visit, date);
-
-            details.push({
-              date: dateStr,
-              visitNumber: visit.visitNumber,
-              preferredTime: visit.preferredTime,
-              duration: visit.duration,
-              requirements: visit.requirements,
-              doubleHanded: visit.doubleHanded,
-              priority: visit.priority,
-              notes: visit.notes,
-              reason: reason,
-            });
+          // Check if appointment date falls within time off period
+          if (
+            appointmentDate >= timeOffStart &&
+            appointmentDate <= timeOffEnd
+          ) {
+            const reason = timeOff.reason || "Personal";
+            issues.push(`Care giver is now on time off (${reason})`);
+            console.log(
+              `  ❌ Appointment on ${apt.date.toISOString().split("T")[0]} - Care giver on time off`
+            );
+            break;
           }
         }
       }
 
-      if (details.length > 0) {
-        unscheduled.push({
-          careReceiver: {
-            id: cr._id,
-            name: cr.name,
-            dailyVisits: cr.dailyVisits.length,
-            genderPreference: cr.genderPreference,
-            address: cr.address,
-            coordinates: cr.coordinates,
-          },
-          expected: dates.length * cr.dailyVisits.length,
-          actual: existingAppointments.length,
-          missing: details.length,
-          details: details,
+      // Check 4: Secondary care giver (if double-handed)
+      if (apt.doubleHanded && apt.secondaryCareGiver) {
+        if (!apt.secondaryCareGiver.isActive) {
+          issues.push("Secondary care giver is now inactive");
+        }
+
+        // Check secondary care giver time off
+        if (apt.secondaryCareGiver.timeOff) {
+          const appointmentDate = new Date(apt.date);
+
+          for (const timeOff of apt.secondaryCareGiver.timeOff) {
+            const timeOffStart = new Date(timeOff.startDate);
+            timeOffStart.setHours(0, 0, 0, 0);
+
+            const timeOffEnd = new Date(timeOff.endDate);
+            timeOffEnd.setHours(23, 59, 59, 999);
+
+            if (
+              appointmentDate >= timeOffStart &&
+              appointmentDate <= timeOffEnd
+            ) {
+              const reason = timeOff.reason || "Personal";
+              issues.push(
+                `Secondary care giver is now on time off (${reason})`
+              );
+              break;
+            }
+          }
+        }
+      } else if (apt.doubleHanded && !apt.secondaryCareGiver) {
+        issues.push(
+          "Double-handed care required but no secondary care giver assigned"
+        );
+      }
+
+      // ========================================
+      // NOTE: We do NOT check for:
+      // - Availability schedule changes (too strict)
+      // - Care receiver time preference changes (too strict)
+      // - Skills changes (unless critical)
+      //
+      // These should only be flagged if explicitly requested
+      // or as warnings, not as "needs reassignment"
+      // ========================================
+
+      // Update appointment status
+      if (issues.length > 0) {
+        // Mark as needs reassignment
+        apt.status = "needs_reassignment";
+        apt.invalidationReason = issues.join("; ");
+        apt.invalidatedAt = new Date();
+        await apt.save();
+
+        invalidAppointments.push({
+          _id: apt._id,
+          careReceiver: apt.careReceiver?.name,
+          careGiver: apt.careGiver?.name,
+          date: apt.date,
+          startTime: apt.startTime,
+          endTime: apt.endTime,
+          issues: issues,
+        });
+
+        updatedCount++;
+        console.log(
+          `  ❌ CONFLICT: ${apt.careReceiver?.name} on ${apt.date.toISOString().split("T")[0]} - ${issues.join("; ")}`
+        );
+      } else {
+        // Still valid - ensure status is scheduled
+        if (apt.status === "needs_reassignment") {
+          apt.status = "scheduled";
+          apt.invalidationReason = null;
+          apt.invalidatedAt = null;
+          await apt.save();
+          updatedCount++;
+          console.log(
+            `  ✅ RESOLVED: ${apt.careReceiver?.name} on ${apt.date.toISOString().split("T")[0]} - back to scheduled`
+          );
+        }
+
+        validAppointments.push({
+          _id: apt._id,
+          careReceiver: apt.careReceiver?.name,
+          careGiver: apt.careGiver?.name,
+          date: apt.date,
+          startTime: apt.startTime,
         });
       }
     }
 
+    console.log(`\n✅ Validation complete:`);
+    console.log(`   Valid: ${validAppointments.length}`);
+    console.log(`   Invalid: ${invalidAppointments.length}`);
+    console.log(`   Updated: ${updatedCount}\n`);
+
     res.json({
       success: true,
       data: {
-        unscheduled,
-        total: unscheduled.length,
+        summary: {
+          total: appointments.length,
+          valid: validAppointments.length,
+          invalid: invalidAppointments.length,
+          updated: updatedCount,
+        },
+        invalidAppointments: invalidAppointments,
+        validAppointments: validAppointments,
       },
+      message:
+        invalidAppointments.length > 0
+          ? `Found ${invalidAppointments.length} appointments that need reassignment`
+          : `All appointments are valid`,
     });
   } catch (error) {
+    console.error("❌ Error in validateSchedule:", error);
     next(error);
   }
 };
 
-// Helper function to find why scheduling failed
-async function findSchedulingFailureReason(careReceiver, visit, date) {
-  try {
-    const [hours, minutes] = visit.preferredTime.split(":").map(Number);
-    const endMinutes = minutes + visit.duration;
-    const endTime = `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
+// =============================================================================
+// EXPORTS (ALL FUNCTIONS EXPORTED)
+// =============================================================================
 
-    const bestCareGiver = await findBestCareGiver(
-      careReceiver,
-      visit,
-      date,
-      visit.preferredTime,
-      endTime
-    );
-
-    if (bestCareGiver.careGiver) {
-      return "Available care giver found but not auto-scheduled";
-    }
-
-    return bestCareGiver.reason || "No available care giver found";
-  } catch (error) {
-    return "Unable to determine reason";
-  }
-}
-
-// @desc    Generate schedule for care receiver(s) - WITH NOTIFICATIONS
-// @route   POST /api/schedule/generate
-// @access  Private
-exports.generateSchedule = async (req, res, next) => {
-  try {
-    const { careReceiverIds, careReceiverId, startDate, endDate } = req.body;
-
-    if (!startDate || !endDate) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          message: "Start date and end date are required",
-          code: "MISSING_DATES",
-        },
-      });
-    }
-
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-
-    if (start > end) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          message: "Start date must be before end date",
-          code: "INVALID_DATE_RANGE",
-        },
-      });
-    }
-
-    let results;
-
-    if (careReceiverId) {
-      results = [await scheduleForCareReceiver(careReceiverId, start, end)];
-    } else if (careReceiverIds && careReceiverIds.length > 0) {
-      results = await bulkSchedule(careReceiverIds, start, end);
-    } else {
-      const allCareReceivers = await CareReceiver.find({ isActive: true });
-      const ids = allCareReceivers.map((cr) => cr._id.toString());
-      results = await bulkSchedule(ids, start, end);
-    }
-
-    const summary = {
-      totalScheduled: results.reduce(
-        (sum, r) => sum + (r.scheduled?.length || 0),
-        0
-      ),
-      totalFailed: results.reduce((sum, r) => sum + (r.failed?.length || 0), 0),
-      careReceiversProcessed: results.length,
-    };
-
-    // ✅ CREATE NOTIFICATION
-    await notificationService.notifyScheduleGenerated(req.user._id, summary);
-
-    res.json({
-      success: true,
-      data: { results, summary },
-      message: `Scheduled ${summary.totalScheduled} appointments, ${summary.totalFailed} failed`,
-    });
-  } catch (error) {
-    console.error("Schedule generation error:", error);
-    next(error);
-  }
+module.exports = {
+  generateSchedule: exports.generateSchedule,
+  getAllAppointments: exports.getAllAppointments,
+  getUnscheduled: exports.getUnscheduled,
+  getScheduleStats: exports.getScheduleStats,
+  getFreshCareReceiverData: exports.getFreshCareReceiverData,
+  findAvailableForManual: exports.findAvailableForManual,
+  createManualAppointment: exports.createManualAppointment,
+  updateAppointmentStatus: exports.updateAppointmentStatus,
+  deleteAppointment: exports.deleteAppointment,
+  validateSchedule: exports.validateSchedule,
 };
-
-// @desc    Create manual appointment - WITH NOTIFICATIONS
-// @route   POST /api/schedule/appointments/manual
-// @access  Private
-exports.createManualAppointment = async (req, res, next) => {
-  try {
-    const {
-      careReceiverId,
-      careGiverId,
-      secondaryCareGiverId,
-      date,
-      startTime,
-      endTime,
-      duration,
-      visitNumber,
-      requirements,
-      doubleHanded,
-      priority,
-      notes,
-    } = req.body;
-
-    // ... existing validation code ...
-
-    const careReceiver = await CareReceiver.findById(careReceiverId);
-    if (!careReceiver) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          message: "Care receiver not found",
-          code: "CARE_RECEIVER_NOT_FOUND",
-        },
-      });
-    }
-
-    const careGiver = await CareGiver.findById(careGiverId);
-    if (!careGiver) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          message: "Care giver not found",
-          code: "CARE_GIVER_NOT_FOUND",
-        },
-      });
-    }
-
-    const appointment = await Appointment.create({
-      careReceiver: careReceiverId,
-      careGiver: careGiverId,
-      secondaryCareGiver: secondaryCareGiverId || undefined,
-      date: new Date(date),
-      startTime,
-      endTime,
-      duration: duration || 60,
-      visitNumber: visitNumber || 1,
-      requirements: requirements || [],
-      doubleHanded: doubleHanded || false,
-      priority: priority || 3,
-      notes: notes || "",
-      status: "scheduled",
-      schedulingMetadata: {
-        scheduledAt: new Date(),
-        scheduledBy: req.user._id,
-        schedulingMethod: "manual",
-      },
-    });
-
-    await appointment.populate("careReceiver careGiver secondaryCareGiver");
-
-    // ✅ CREATE NOTIFICATION
-    await notificationService.notifyManualSchedule(req.user._id, {
-      appointmentId: appointment._id,
-      careReceiverName: careReceiver.name,
-      careGiverName: careGiver.name,
-      date: date,
-      time: startTime,
-    });
-
-    res.status(201).json({
-      success: true,
-      data: { appointment },
-      message: "Appointment created successfully",
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-module.exports = exports;

@@ -1,4 +1,4 @@
-// Updated Appointment Model - References Availability Version
+// Updated Appointment Model - WITH VALIDATION FIELDS
 
 const mongoose = require("mongoose");
 
@@ -96,6 +96,7 @@ const appointmentSchema = new mongoose.Schema(
         "cancelled",
         "missed",
         "needs_review",
+        "needs_reassignment", // ← ADDED FOR VALIDATION SYSTEM
       ],
       default: "scheduled",
       index: true,
@@ -105,6 +106,21 @@ const appointmentSchema = new mongoose.Schema(
     notes: String,
 
     cancellationReason: String,
+
+    // ========================================
+    // NEW FIELDS FOR VALIDATION SYSTEM
+    // ========================================
+    invalidationReason: {
+      type: String,
+      // Stores why appointment needs reassignment
+      // Example: "Care giver is now on time off; Care receiver changed time"
+    },
+
+    invalidatedAt: {
+      type: Date,
+      // When the conflict was detected
+    },
+    // ========================================
 
     // Completion details
     completedAt: Date,
@@ -155,6 +171,7 @@ const appointmentSchema = new mongoose.Schema(
 appointmentSchema.index({ date: 1, careGiver: 1 });
 appointmentSchema.index({ date: 1, status: 1 });
 appointmentSchema.index({ careReceiver: 1, date: 1 });
+appointmentSchema.index({ status: 1, date: 1 }); // ← ADDED for validation queries
 
 // Pre-save: Capture availability snapshot
 appointmentSchema.pre("save", async function (next) {

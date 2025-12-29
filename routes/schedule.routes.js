@@ -1,38 +1,79 @@
 // backend/routes/schedule.routes.js
-// UPDATED - Added fresh data endpoints
+// COMPLETE - With validation endpoint
 
 const express = require("express");
 const { protect } = require("../middleware/auth");
-const {
-  generateSchedule,
-  getAllAppointments,
-  getUnscheduled,
-  findAvailableForManual,
-  getFreshCareReceiverData,
-  createManualAppointment,
-  updateAppointmentStatus,
-  deleteAppointment,
-  getScheduleStats,
-} = require("../controllers/scheduleController");
+const scheduleController = require("../controllers/scheduleController");
+const scheduleAnalysisController = require("../controllers/scheduleAnalysisController");
 
 const router = express.Router();
 
 // All routes require authentication
 router.use(protect);
 
-// Schedule generation
-router.post("/generate", generateSchedule);
+// ========================================
+// SCHEDULE GENERATION
+// ========================================
+router.post("/generate", scheduleController.generateSchedule);
 
-// Appointments
-router.get("/appointments", getAllAppointments);
-router.post("/appointments/manual", createManualAppointment);
-router.patch("/appointments/:id/status", updateAppointmentStatus);
-router.delete("/appointments/:id", deleteAppointment);
+// ========================================
+// APPOINTMENTS
+// ========================================
+// Get all appointments
+router.get("/appointments", scheduleController.getAllAppointments);
 
-// Utilities
-router.get("/unscheduled", getUnscheduled); // UPDATED - Returns fresh data
-router.post("/find-available", findAvailableForManual); // UPDATED - Uses fresh data
-router.get("/care-receiver/:id/fresh", getFreshCareReceiverData); // NEW - Get fresh care receiver data
-router.get("/stats", getScheduleStats);
+// Create manual appointment
+router.post("/appointments/manual", scheduleController.createManualAppointment);
+
+// Update appointment status
+router.patch(
+  "/appointments/:id/status",
+  scheduleController.updateAppointmentStatus
+);
+
+// Delete appointment
+router.delete("/appointments/:id", scheduleController.deleteAppointment);
+
+// Get appointment assignment reasoning
+router.get(
+  "/appointments/:appointmentId/reasoning",
+  scheduleAnalysisController.getAssignmentReasoning
+);
+
+// ========================================
+// SCHEDULE VALIDATION
+// ========================================
+// Validate schedule for conflicts
+router.post("/validate", protect, scheduleController.validateSchedule);
+
+// ========================================
+// UNSCHEDULED & ANALYSIS
+// ========================================
+// Get unscheduled appointments
+router.get("/unscheduled", scheduleController.getUnscheduled);
+
+// Analyze why appointment couldn't be scheduled
+router.post(
+  "/analyze-unscheduled",
+  scheduleAnalysisController.analyzeUnscheduledAppointment
+);
+
+// ========================================
+// MANUAL SCHEDULING
+// ========================================
+// Find available care givers for manual scheduling
+router.post("/find-available", scheduleController.findAvailableForManual);
+
+// Get fresh care receiver data
+router.get(
+  "/care-receiver/:id/fresh",
+  scheduleController.getFreshCareReceiverData
+);
+
+// ========================================
+// STATISTICS
+// ========================================
+// Get schedule stats
+router.get("/stats", scheduleController.getScheduleStats);
 
 module.exports = router;
