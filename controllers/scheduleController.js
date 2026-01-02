@@ -1,5 +1,5 @@
 // backend/controllers/scheduleController.js
-// FINAL CLEAN VERSION - No duplicates, all functions exported properly
+// FINAL CLEAN VERSION - Time off bug fixed, no duplicates
 
 const Appointment = require("../models/Appointment");
 const CareReceiver = require("../models/CareReceiver");
@@ -316,9 +316,6 @@ exports.getUnscheduled = async (req, res, next) => {
   }
 };
 
-// ADD THIS TO scheduleController.js
-// Place it after the getUnscheduled function
-
 // @desc    Analyze why a specific appointment couldn't be scheduled
 // @route   POST /api/schedule/analyze-unscheduled
 // @access  Private
@@ -468,7 +465,7 @@ exports.analyzeUnscheduled = async (req, res, next) => {
   }
 };
 
-// Helper function (reuse the one we already have)
+// Helper function - First instance (used by analyzeUnscheduled)
 async function checkCareGiverAvailabilityFresh(
   careGiverId,
   date,
@@ -485,6 +482,30 @@ async function checkCareGiverAvailabilityFresh(
     };
   }
 
+  // ========================================
+  // FIX: Check time off from CareGiver FIRST
+  // ========================================
+  const isOnTimeOff = (careGiver.timeOff || []).some((to) => {
+    const startDate = new Date(to.startDate);
+    startDate.setHours(0, 0, 0, 0);
+
+    const endDate = new Date(to.endDate);
+    endDate.setHours(23, 59, 59, 999);
+
+    const checkDate = new Date(date);
+    checkDate.setHours(0, 0, 0, 0);
+
+    return checkDate >= startDate && checkDate <= endDate;
+  });
+
+  if (isOnTimeOff) {
+    console.log(
+      `  ❌ ${careGiver.name} is on time off on ${date.toISOString().split("T")[0]}`
+    );
+    return { available: false, reason: "On time off" };
+  }
+  // ========================================
+
   let availability = await Availability.findOne({
     careGiver: careGiverId,
     effectiveFrom: { $lte: date },
@@ -499,22 +520,11 @@ async function checkCareGiverAvailabilityFresh(
   ) {
     availability = {
       schedule: careGiver.availability,
-      timeOff: careGiver.timeOff || [],
     };
   }
 
   if (!availability) {
     return { available: false, reason: "No availability schedule" };
-  }
-
-  const isOnTimeOff = (availability.timeOff || []).some((to) => {
-    const startDate = new Date(to.startDate);
-    const endDate = new Date(to.endDate);
-    return date >= startDate && date <= endDate;
-  });
-
-  if (isOnTimeOff) {
-    return { available: false, reason: "On time off" };
   }
 
   const dayOfWeek = date.toLocaleDateString("en-GB", { weekday: "long" });
@@ -793,7 +803,7 @@ exports.findAvailableForManual = async (req, res, next) => {
     for (const cg of potentialCareGivers) {
       console.log(`\n>>> Checking ${cg.name}...`);
 
-      const availabilityCheck = await checkCareGiverAvailabilityFresh(
+      const availabilityCheck = await checkCareGiverAvailabilityForManual(
         cg._id,
         appointmentDate,
         startTime,
@@ -852,6 +862,149 @@ exports.findAvailableForManual = async (req, res, next) => {
     next(error);
   }
 };
+
+// Helper function - Second instance (used by findAvailableForManual)
+async function checkCareGiverAvailabilityForManual(
+  careGiverId,
+  date,
+  startTime,
+  endTime,
+  careReceiver
+) {
+  console.log(`    Checking availability...`);
+
+  // FRESH: Re-query care giver to get latest data
+  const careGiver = await CareGiver.findById(careGiverId).lean();
+
+  if (!careGiver || !careGiver.isActive) {
+    return {
+      available: false,
+      reason: careGiver ? "Inactive" : "Care giver not found",
+    };
+  }
+
+  // ========================================
+  // FIX: Check time off from CareGiver FIRST
+  // ========================================
+  const isOnTimeOff = (careGiver.timeOff || []).some((to) => {
+    const startDate = new Date(to.startDate);
+    startDate.setHours(0, 0, 0, 0);
+
+    const endDate = new Date(to.endDate);
+    endDate.setHours(23, 59, 59, 999);
+
+    const checkDate = new Date(date);
+    checkDate.setHours(0, 0, 0, 0);
+
+    return checkDate >= startDate && checkDate <= endDate;
+  });
+
+  if (isOnTimeOff) {
+    console.log(
+      `  ❌ ${careGiver.name} is on time off on ${date.toISOString().split("T")[0]}`
+    );
+    return { available: false, reason: "On time off" };
+  }
+  // ========================================
+
+  // FRESH: Get current availability from Availability collection
+  let availability = await Availability.findOne({
+    careGiver: careGiverId,
+    effectiveFrom: { $lte: date },
+    $or: [{ effectiveTo: null }, { effectiveTo: { $gte: date } }],
+    isActive: true,
+  }).lean();
+
+  // Fallback to embedded availability if collection is empty
+  if (
+    !availability &&
+    careGiver.availability &&
+    careGiver.availability.length > 0
+  ) {
+    console.log(`    Using embedded availability`);
+    availability = {
+      schedule: careGiver.availability,
+    };
+  }
+
+  if (!availability) {
+    return { available: false, reason: "No availability schedule" };
+  }
+
+  // Check working hours
+  const dayOfWeek = date.toLocaleDateString("en-GB", { weekday: "long" });
+  const daySchedule = availability.schedule.find(
+    (s) => s.dayOfWeek === dayOfWeek
+  );
+
+  if (!daySchedule || daySchedule.slots.length === 0) {
+    return { available: false, reason: `Not working on ${dayOfWeek}` };
+  }
+
+  const isInWorkingHours = daySchedule.slots.some((slot) => {
+    return startTime >= slot.startTime && endTime <= slot.endTime;
+  });
+
+  if (!isInWorkingHours) {
+    console.log(
+      `    Working hours: ${daySchedule.slots.map((s) => `${s.startTime}-${s.endTime}`).join(", ")}`
+    );
+    console.log(`    Requested: ${startTime}-${endTime}`);
+    return { available: false, reason: "Outside working hours" };
+  }
+
+  // FRESH: Check conflicts with current appointments
+  const startOfDay = new Date(date);
+  startOfDay.setHours(0, 0, 0, 0);
+  const endOfDay = new Date(date);
+  endOfDay.setHours(23, 59, 59, 999);
+
+  const conflicts = await Appointment.find({
+    $or: [{ careGiver: careGiverId }, { secondaryCareGiver: careGiverId }],
+    date: { $gte: startOfDay, $lte: endOfDay },
+    status: { $in: ["scheduled", "in_progress"] },
+  }).lean();
+
+  for (const apt of conflicts) {
+    if (
+      (startTime >= apt.startTime && startTime < apt.endTime) ||
+      (endTime > apt.startTime && endTime <= apt.endTime) ||
+      (startTime <= apt.startTime && endTime >= apt.endTime)
+    ) {
+      return { available: false, reason: "Has conflicting appointment" };
+    }
+  }
+
+  // Calculate distance with FRESH coordinates
+  let distance = null;
+  let travelTime = null;
+
+  if (
+    careGiver.coordinates?.coordinates &&
+    careReceiver.coordinates?.coordinates
+  ) {
+    distance = calculateDistance(
+      careGiver.coordinates.coordinates,
+      careReceiver.coordinates.coordinates
+    );
+    travelTime = Math.ceil((distance / 40) * 60); // Assume 40 km/h average
+
+    console.log(`    Distance calculated: ${distance.toFixed(2)} km`);
+  } else {
+    console.log(`    Distance: Cannot calculate (missing coordinates)`);
+  }
+
+  return {
+    available: true,
+    distance: distance,
+    travelTime: travelTime,
+    details: {
+      workingHours: daySchedule.slots[0],
+      conflicts: conflicts.length,
+      dayOfWeek: dayOfWeek,
+    },
+  };
+}
 
 // @desc    Create manual appointment
 // @route   POST /api/schedule/appointments/manual
@@ -1040,7 +1193,7 @@ exports.deleteAppointment = async (req, res, next) => {
 };
 
 // =============================================================================
-// HELPER FUNCTIONS (DEFINED ONCE)
+// HELPER FUNCTIONS
 // =============================================================================
 
 // Helper to find why scheduling failed (ANALYSIS ONLY - NO CREATION)
@@ -1068,154 +1221,6 @@ async function findSchedulingFailureReason(careReceiver, visit, date) {
   }
 }
 
-// Helper to check care giver availability with FRESH data
-async function checkCareGiverAvailabilityFresh(
-  careGiverId,
-  date,
-  startTime,
-  endTime,
-  careReceiver
-) {
-  console.log(`    Checking availability...`);
-
-  // FRESH: Re-query care giver to get latest data
-  const careGiver = await CareGiver.findById(careGiverId).lean();
-
-  if (!careGiver || !careGiver.isActive) {
-    return {
-      available: false,
-      reason: careGiver ? "Inactive" : "Care giver not found",
-    };
-  }
-
-  // FRESH: Get current availability from Availability collection
-  let availability = await Availability.findOne({
-    careGiver: careGiverId,
-    effectiveFrom: { $lte: date },
-    $or: [{ effectiveTo: null }, { effectiveTo: { $gte: date } }],
-    isActive: true,
-  }).lean();
-
-  // Fallback to embedded availability if collection is empty
-  if (
-    !availability &&
-    careGiver.availability &&
-    careGiver.availability.length > 0
-  ) {
-    console.log(`    Using embedded availability`);
-    availability = {
-      schedule: careGiver.availability,
-      timeOff: careGiver.timeOff || [],
-    };
-  }
-
-  if (!availability) {
-    return { available: false, reason: "No availability schedule" };
-  }
-
-  // Check time off
-  const isOnTimeOff = (availability.timeOff || []).some((to) => {
-    const startDate = new Date(to.startDate);
-    const endDate = new Date(to.endDate);
-    return date >= startDate && date <= endDate;
-  });
-
-  if (isOnTimeOff) {
-    return { available: false, reason: "On time off" };
-  }
-
-  // Check working hours
-  const dayOfWeek = date.toLocaleDateString("en-GB", { weekday: "long" });
-  const daySchedule = availability.schedule.find(
-    (s) => s.dayOfWeek === dayOfWeek
-  );
-
-  if (!daySchedule || daySchedule.slots.length === 0) {
-    return { available: false, reason: `Not working on ${dayOfWeek}` };
-  }
-
-  const isInWorkingHours = daySchedule.slots.some((slot) => {
-    return startTime >= slot.startTime && endTime <= slot.endTime;
-  });
-
-  if (!isInWorkingHours) {
-    console.log(
-      `    Working hours: ${daySchedule.slots.map((s) => `${s.startTime}-${s.endTime}`).join(", ")}`
-    );
-    console.log(`    Requested: ${startTime}-${endTime}`);
-    return { available: false, reason: "Outside working hours" };
-  }
-
-  // FRESH: Check conflicts with current appointments
-  const startOfDay = new Date(date);
-  startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(date);
-  endOfDay.setHours(23, 59, 59, 999);
-
-  const conflicts = await Appointment.find({
-    $or: [{ careGiver: careGiverId }, { secondaryCareGiver: careGiverId }],
-    date: { $gte: startOfDay, $lte: endOfDay },
-    status: { $in: ["scheduled", "in_progress"] },
-  }).lean();
-
-  for (const apt of conflicts) {
-    if (
-      (startTime >= apt.startTime && startTime < apt.endTime) ||
-      (endTime > apt.startTime && endTime <= apt.endTime) ||
-      (startTime <= apt.startTime && endTime >= apt.endTime)
-    ) {
-      return { available: false, reason: "Has conflicting appointment" };
-    }
-  }
-
-  // Calculate distance with FRESH coordinates
-  let distance = null;
-  let travelTime = null;
-
-  if (
-    careGiver.coordinates?.coordinates &&
-    careReceiver.coordinates?.coordinates
-  ) {
-    distance = calculateDistance(
-      careGiver.coordinates.coordinates,
-      careReceiver.coordinates.coordinates
-    );
-    travelTime = Math.ceil((distance / 40) * 60); // Assume 40 km/h average
-
-    console.log(`    Distance calculated: ${distance.toFixed(2)} km`);
-  } else {
-    console.log(`    Distance: Cannot calculate (missing coordinates)`);
-  }
-
-  return {
-    available: true,
-    distance: distance,
-    travelTime: travelTime,
-    details: {
-      workingHours: daySchedule.slots[0],
-      conflicts: conflicts.length,
-      dayOfWeek: dayOfWeek,
-    },
-  };
-}
-
-// Calculate distance between two coordinates
-function calculateDistance(coords1, coords2) {
-  const [lon1, lat1] = coords1;
-  const [lon2, lat2] = coords2;
-  const R = 6371; // Earth's radius in km
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
 // Calculate duration between start and end time
 function calculateDuration(startTime, endTime) {
   const [startHours, startMinutes] = startTime.split(":").map(Number);
@@ -1226,9 +1231,6 @@ function calculateDuration(startTime, endTime) {
 // @desc    Validate all scheduled appointments and detect conflicts
 // @route   POST /api/schedule/validate
 // @access  Private
-// FIXED validateSchedule - Only flags REAL conflicts
-// Replace the validateSchedule function in scheduleController.js
-
 exports.validateSchedule = async (req, res, next) => {
   console.log("\n🔍 POST /schedule/validate CALLED");
   console.log("Validating all scheduled appointments...");
@@ -1292,26 +1294,42 @@ exports.validateSchedule = async (req, res, next) => {
         issues.push("Care giver is now inactive");
       }
 
-      // Check 3: TIME OFF - Most important check
+      // Check 3: TIME OFF - UTC comparison
       if (apt.careGiver && apt.careGiver.isActive && apt.careGiver.timeOff) {
+        // Normalize appointment date to UTC
         const appointmentDate = new Date(apt.date);
+        const utcAppointmentDate = Date.UTC(
+          appointmentDate.getUTCFullYear(),
+          appointmentDate.getUTCMonth(),
+          appointmentDate.getUTCDate()
+        );
 
         for (const timeOff of apt.careGiver.timeOff) {
-          const timeOffStart = new Date(timeOff.startDate);
-          timeOffStart.setHours(0, 0, 0, 0);
+          // Normalize time off dates to UTC
+          const timeOffStartDate = new Date(timeOff.startDate);
+          const utcStart = Date.UTC(
+            timeOffStartDate.getUTCFullYear(),
+            timeOffStartDate.getUTCMonth(),
+            timeOffStartDate.getUTCDate()
+          );
 
-          const timeOffEnd = new Date(timeOff.endDate);
-          timeOffEnd.setHours(23, 59, 59, 999);
+          const timeOffEndDate = new Date(timeOff.endDate);
+          const utcEnd = Date.UTC(
+            timeOffEndDate.getUTCFullYear(),
+            timeOffEndDate.getUTCMonth(),
+            timeOffEndDate.getUTCDate(),
+            23,
+            59,
+            59,
+            999
+          );
 
-          // Check if appointment date falls within time off period
-          if (
-            appointmentDate >= timeOffStart &&
-            appointmentDate <= timeOffEnd
-          ) {
+          // Check if appointment date falls within time off period (UTC comparison)
+          if (utcAppointmentDate >= utcStart && utcAppointmentDate <= utcEnd) {
             const reason = timeOff.reason || "Personal";
             issues.push(`Care giver is now on time off (${reason})`);
             console.log(
-              `  ❌ Appointment on ${apt.date.toISOString().split("T")[0]} - Care giver on time off`
+              `  ❌ Appointment on ${new Date(utcAppointmentDate).toISOString().split("T")[0]} - Care giver on time off`
             );
             break;
           }
@@ -1324,20 +1342,40 @@ exports.validateSchedule = async (req, res, next) => {
           issues.push("Secondary care giver is now inactive");
         }
 
-        // Check secondary care giver time off
+        // Check secondary care giver time off (UTC comparison)
         if (apt.secondaryCareGiver.timeOff) {
+          // Normalize appointment date to UTC
           const appointmentDate = new Date(apt.date);
+          const utcAppointmentDate = Date.UTC(
+            appointmentDate.getUTCFullYear(),
+            appointmentDate.getUTCMonth(),
+            appointmentDate.getUTCDate()
+          );
 
           for (const timeOff of apt.secondaryCareGiver.timeOff) {
-            const timeOffStart = new Date(timeOff.startDate);
-            timeOffStart.setHours(0, 0, 0, 0);
+            // Normalize time off dates to UTC
+            const timeOffStartDate = new Date(timeOff.startDate);
+            const utcStart = Date.UTC(
+              timeOffStartDate.getUTCFullYear(),
+              timeOffStartDate.getUTCMonth(),
+              timeOffStartDate.getUTCDate()
+            );
 
-            const timeOffEnd = new Date(timeOff.endDate);
-            timeOffEnd.setHours(23, 59, 59, 999);
+            const timeOffEndDate = new Date(timeOff.endDate);
+            const utcEnd = Date.UTC(
+              timeOffEndDate.getUTCFullYear(),
+              timeOffEndDate.getUTCMonth(),
+              timeOffEndDate.getUTCDate(),
+              23,
+              59,
+              59,
+              999
+            );
 
+            // UTC comparison
             if (
-              appointmentDate >= timeOffStart &&
-              appointmentDate <= timeOffEnd
+              utcAppointmentDate >= utcStart &&
+              utcAppointmentDate <= utcEnd
             ) {
               const reason = timeOff.reason || "Personal";
               issues.push(

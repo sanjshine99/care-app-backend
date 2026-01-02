@@ -60,13 +60,17 @@ const careReceiverSchema = new mongoose.Schema(
       enum: ["Male", "Female", "No Preference"],
       default: "No Preference",
     },
+
+    // ========================================
+    // UPDATED: Enhanced with flexible scheduling
+    // ========================================
     dailyVisits: [
       {
         visitNumber: {
           type: Number,
           required: true,
           min: 1,
-          max: 4,
+          max: 10, // Increased from 4 to allow more visits
         },
         preferredTime: {
           type: String,
@@ -77,8 +81,64 @@ const careReceiverSchema = new mongoose.Schema(
           type: Number,
           required: true,
           min: [15, "Duration must be at least 15 minutes"],
-          max: [120, "Duration cannot exceed 120 minutes (2 hours)"], // UPDATED: Was 240
+          max: [240, "Duration cannot exceed 240 minutes (4 hours)"],
         },
+
+        // NEW: Days of week when visit should occur
+        daysOfWeek: {
+          type: [String],
+          enum: [
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+            "Saturday",
+            "Sunday",
+          ],
+          default: function () {
+            // If not specified, default to all 7 days (backward compatible)
+            return [
+              "Monday",
+              "Tuesday",
+              "Wednesday",
+              "Thursday",
+              "Friday",
+              "Saturday",
+              "Sunday",
+            ];
+          },
+          validate: {
+            validator: function (v) {
+              return v && v.length > 0;
+            },
+            message: "At least one day of week must be selected",
+          },
+        },
+
+        // NEW: Recurrence pattern
+        recurrencePattern: {
+          type: String,
+          enum: ["weekly", "biweekly", "monthly", "custom"],
+          default: "weekly",
+        },
+
+        // NEW: Recurrence interval (for custom patterns)
+        // 1 = every week, 2 = every 2 weeks, 4 = monthly, etc.
+        recurrenceInterval: {
+          type: Number,
+          min: 1,
+          max: 52, // Max once per year
+          default: 1,
+        },
+
+        // NEW: Start date for recurrence calculation (optional)
+        // Used to determine which specific weeks/months the visit occurs
+        recurrenceStartDate: {
+          type: Date,
+          default: null,
+        },
+
         requirements: {
           type: [String],
           required: true,
@@ -109,6 +169,8 @@ const careReceiverSchema = new mongoose.Schema(
         },
       },
     ],
+    // ========================================
+
     preferredCareGiver: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "CareGiver",
@@ -177,6 +239,7 @@ careReceiverSchema.index({ coordinates: "2dsphere" }); // Geospatial index
 careReceiverSchema.index({ isActive: 1 });
 careReceiverSchema.index({ preferredCareGiver: 1 });
 careReceiverSchema.index({ "dailyVisits.doubleHanded": 1 });
+careReceiverSchema.index({ "dailyVisits.daysOfWeek": 1 }); // NEW: Index for day queries
 
 // Pre-save middleware to generate full address
 careReceiverSchema.pre("save", function (next) {
@@ -197,7 +260,7 @@ careReceiverSchema.pre("save", function (next) {
   next();
 });
 
-// Validation: Ensure daily visits are sequential (1, 2, 3, 4)
+// Validation: Ensure daily visits are sequential (1, 2, 3, 4...)
 careReceiverSchema.pre("save", function (next) {
   if (this.dailyVisits && this.dailyVisits.length > 0) {
     const visitNumbers = this.dailyVisits.map((v) => v.visitNumber);
@@ -244,6 +307,69 @@ careReceiverSchema.virtual("totalDailyCareTime").get(function () {
 careReceiverSchema.methods.getVisit = function (visitNumber) {
   return this.dailyVisits.find((v) => v.visitNumber === visitNumber);
 };
+
+// ========================================
+// NEW METHOD: Check if visit should occur on a specific date
+// ========================================
+careReceiverSchema.methods.shouldVisitOccur = function (
+  visitNumber,
+  checkDate
+) {
+  const visit = this.getVisit(visitNumber);
+  if (!visit) return false;
+
+  const dayOfWeek = checkDate.toLocaleDateString("en-GB", { weekday: "long" });
+
+  // Check if visit occurs on this day of week
+  if (!visit.daysOfWeek.includes(dayOfWeek)) {
+    return false;
+  }
+
+  // Check recurrence pattern
+  if (visit.recurrencePattern === "weekly") {
+    // Occurs every week on specified days
+    return true;
+  }
+
+  if (
+    visit.recurrencePattern === "biweekly" ||
+    visit.recurrencePattern === "monthly" ||
+    visit.recurrencePattern === "custom"
+  ) {
+    // Need to calculate if this specific week/month matches
+    const startDate = visit.recurrenceStartDate || this.createdAt;
+    const weeksDiff = Math.floor(
+      (checkDate - startDate) / (7 * 24 * 60 * 60 * 1000)
+    );
+
+    return weeksDiff % visit.recurrenceInterval === 0;
+  }
+
+  return true;
+};
+
+// Method to get all scheduled dates for a visit in a date range
+careReceiverSchema.methods.getScheduledDates = function (
+  visitNumber,
+  startDate,
+  endDate
+) {
+  const visit = this.getVisit(visitNumber);
+  if (!visit) return [];
+
+  const scheduledDates = [];
+  const currentDate = new Date(startDate);
+
+  while (currentDate <= endDate) {
+    if (this.shouldVisitOccur(visitNumber, currentDate)) {
+      scheduledDates.push(new Date(currentDate));
+    }
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+
+  return scheduledDates;
+};
+// ========================================
 
 // Ensure virtuals are included in JSON
 careReceiverSchema.set("toJSON", { virtuals: true });

@@ -1,15 +1,15 @@
 // backend/controllers/careGiverController.js
-// FIXED - Falls back to default coordinates if geocoding fails
+// FIXED - Includes schedule endpoint with secondary care giver support
 
 const CareGiver = require("../models/CareGiver");
 const Availability = require("../models/Availability");
+const Appointment = require("../models/Appointment");
 
 // Try to import geocode service, but don't fail if it doesn't exist
 let geocodeAddress;
 try {
   geocodeAddress = require("../services/mapboxService").geocodeAddress;
 } catch (e) {
-  // Service doesn't exist, we'll use fallback
   geocodeAddress = null;
 }
 
@@ -24,7 +24,7 @@ const getAllCareGivers = async (req, res, next) => {
       isActive,
       canDrive,
       page = 1,
-      limit = 10,
+      limit = 100, // INCREASED: Show more care givers in calendar
     } = req.query;
     const query = {};
 
@@ -89,12 +89,38 @@ const createCareGiver = async (req, res, next) => {
     console.log("\n=== CREATE CARE GIVER ===");
     const { address } = req.body;
 
+    // Normalize time off dates to UTC midnight
+    if (req.body.timeOff && Array.isArray(req.body.timeOff)) {
+      console.log("⏰ Normalizing time off dates to UTC...");
+      req.body.timeOff = req.body.timeOff.map((timeOff) => {
+        const startDate = new Date(timeOff.startDate);
+        startDate.setUTCHours(0, 0, 0, 0);
+
+        const endDate = new Date(timeOff.endDate);
+        endDate.setUTCHours(23, 59, 59, 999);
+
+        return {
+          startDate: startDate,
+          endDate: endDate,
+          reason: timeOff.reason || "",
+        };
+      });
+
+      console.log(
+        "✅ Normalized time off:",
+        req.body.timeOff.map((to) => ({
+          start: to.startDate.toISOString().split("T")[0],
+          end: to.endDate.toISOString().split("T")[0],
+          reason: to.reason,
+        }))
+      );
+    }
+
     // GEOCODE WITH FALLBACK
     if (address && address.street && address.city && address.postcode) {
       const fullAddress = `${address.street}, ${address.city} ${address.postcode}`;
       req.body.address.full = fullAddress;
 
-      // Try geocoding
       if (geocodeAddress && process.env.MAPBOX_ACCESS_TOKEN) {
         try {
           console.log("🗺️ Geocoding:", fullAddress);
@@ -110,7 +136,6 @@ const createCareGiver = async (req, res, next) => {
           };
         }
       } else {
-        // No geocoding service or token
         console.log("📍 No geocoding service - using default coordinates");
         req.body.coordinates = {
           type: "Point",
@@ -118,7 +143,6 @@ const createCareGiver = async (req, res, next) => {
         };
       }
     } else {
-      // No address provided - use default
       console.log("📍 No address - using default coordinates");
       req.body.coordinates = {
         type: "Point",
@@ -198,6 +222,33 @@ const updateCareGiver = async (req, res, next) => {
           message: "Care giver not found",
           code: "CARE_GIVER_NOT_FOUND",
         },
+      });
+    }
+
+    // Normalize time off dates to UTC midnight
+    if (req.body.timeOff && Array.isArray(req.body.timeOff)) {
+      console.log("\n⏰ Normalizing time off dates to UTC...");
+      console.log("Before:", req.body.timeOff);
+
+      req.body.timeOff = req.body.timeOff.map((timeOff) => {
+        const startDate = new Date(timeOff.startDate);
+        startDate.setUTCHours(0, 0, 0, 0);
+
+        const endDate = new Date(timeOff.endDate);
+        endDate.setUTCHours(23, 59, 59, 999);
+
+        return {
+          startDate: startDate,
+          endDate: endDate,
+          reason: timeOff.reason || "",
+        };
+      });
+
+      console.log("✅ Normalized time off dates:");
+      req.body.timeOff.forEach((to, idx) => {
+        console.log(
+          `   ${idx + 1}. ${to.startDate.toISOString()} → ${to.endDate.toISOString()} (${to.reason})`
+        );
       });
     }
 
@@ -316,6 +367,88 @@ const deleteCareGiver = async (req, res, next) => {
   }
 };
 
+// ========================================
+// NEW: Get care giver's schedule (appointments)
+// FIXED: Includes appointments where care giver is SECONDARY
+// ========================================
+const getCareGiverSchedule = async (req, res, next) => {
+  try {
+    const { startDate, endDate } = req.query;
+
+    console.log(`\n[CG Schedule] Fetching schedule for CG: ${req.params.id}`);
+
+    const careGiver = await CareGiver.findById(req.params.id);
+    if (!careGiver) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          message: "Care giver not found",
+          code: "CARE_GIVER_NOT_FOUND",
+        },
+      });
+    }
+
+    // Build query
+    const query = {
+      // CRITICAL FIX: Include appointments where CG is PRIMARY OR SECONDARY
+      $or: [
+        { careGiver: req.params.id },
+        { secondaryCareGiver: req.params.id },
+      ],
+    };
+
+    // Add date filter if provided
+    if (startDate && endDate) {
+      query.date = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate),
+      };
+    }
+
+    console.log(`[CG Schedule] Query:`, JSON.stringify(query));
+
+    // Fetch appointments
+    const appointments = await Appointment.find(query)
+      .populate("careReceiver", "name phone address")
+      .populate("careGiver", "name email phone")
+      .populate("secondaryCareGiver", "name email phone")
+      .sort({ date: 1, startTime: 1 });
+
+    console.log(`[CG Schedule] Found ${appointments.length} appointments`);
+
+    // Log which appointments are primary vs secondary
+    const primaryCount = appointments.filter(
+      (apt) => apt.careGiver && apt.careGiver._id.toString() === req.params.id
+    ).length;
+    const secondaryCount = appointments.filter(
+      (apt) =>
+        apt.secondaryCareGiver &&
+        apt.secondaryCareGiver._id.toString() === req.params.id
+    ).length;
+
+    console.log(
+      `[CG Schedule] Primary: ${primaryCount}, Secondary: ${secondaryCount}`
+    );
+
+    res.json({
+      success: true,
+      data: {
+        appointments,
+        careGiver,
+        summary: {
+          total: appointments.length,
+          asPrimary: primaryCount,
+          asSecondary: secondaryCount,
+        },
+      },
+    });
+  } catch (error) {
+    console.error("[CG Schedule] Error:", error);
+    next(error);
+  }
+};
+// ========================================
+
 // @desc    Get care giver statistics
 // @route   GET /api/caregivers/:id/stats
 // @access  Private
@@ -336,7 +469,7 @@ const getCareGiverStats = async (req, res, next) => {
     let completedAppointments = 0;
 
     try {
-      const Appointment = require("../models/Appointment");
+      // FIXED: Count appointments where CG is PRIMARY OR SECONDARY
       totalAppointments = await Appointment.countDocuments({
         $or: [
           { careGiver: req.params.id },
@@ -378,5 +511,6 @@ module.exports = {
   createCareGiver,
   updateCareGiver,
   deleteCareGiver,
+  getCareGiverSchedule, // NEW: Export schedule endpoint
   getCareGiverStats,
 };

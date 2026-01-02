@@ -1,5 +1,5 @@
 // backend/routes/caregiver.routes.js
-// Complete routes for care giver management
+// FIXED - Added schedule endpoint
 
 const express = require("express");
 const { protect } = require("../middleware/auth");
@@ -9,6 +9,7 @@ const {
   createCareGiver,
   updateCareGiver,
   deleteCareGiver,
+  getCareGiverSchedule, // NEW
   getCareGiverStats,
 } = require("../controllers/careGiverController");
 
@@ -17,7 +18,7 @@ const router = express.Router();
 // All routes require authentication
 router.use(protect);
 
-// CRUD routes
+// Care giver CRUD routes
 router
   .route("/")
   .get(getAllCareGivers) // GET /api/caregivers
@@ -29,7 +30,8 @@ router
   .put(updateCareGiver) // PUT /api/caregivers/:id
   .delete(deleteCareGiver); // DELETE /api/caregivers/:id
 
-// Stats route (must be BEFORE /:id to avoid conflict)
+// Additional routes
+router.get("/:id/schedule", getCareGiverSchedule); // NEW: GET /api/caregivers/:id/schedule
 router.get("/:id/stats", getCareGiverStats); // GET /api/caregivers/:id/stats
 
 module.exports = router;

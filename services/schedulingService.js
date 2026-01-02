@@ -1,5 +1,5 @@
 // backend/services/schedulingService.js
-// FIXED - Now enforces maxAppointmentsPerDay setting
+// FIXED - UTC timezone + DOUBLE-HANDED CARE support
 
 const Availability = require("../models/Availability");
 const CareGiver = require("../models/CareGiver");
@@ -66,15 +66,64 @@ function calculateDistance(coords1, coords2) {
   return R * c;
 }
 
+// NEW: Check if visit should occur on specific date
+function shouldVisitOccur(visit, checkDate, careReceiverCreatedAt) {
+  const dayOfWeek = checkDate.toLocaleDateString("en-GB", { weekday: "long" });
+
+  const daysOfWeek = visit.daysOfWeek || [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+  ];
+  if (!daysOfWeek.includes(dayOfWeek)) {
+    return false;
+  }
+
+  const recurrencePattern = visit.recurrencePattern || "weekly";
+
+  if (recurrencePattern === "weekly") {
+    return true;
+  }
+
+  if (
+    recurrencePattern === "biweekly" ||
+    recurrencePattern === "monthly" ||
+    recurrencePattern === "custom"
+  ) {
+    const startDate =
+      visit.recurrenceStartDate || careReceiverCreatedAt || new Date();
+    const recurrenceInterval = visit.recurrenceInterval || 1;
+
+    const checkDateStart = new Date(checkDate);
+    checkDateStart.setHours(0, 0, 0, 0);
+
+    const startDateStart = new Date(startDate);
+    startDateStart.setHours(0, 0, 0, 0);
+
+    const weeksDiff = Math.floor(
+      (checkDateStart - startDateStart) / (7 * 24 * 60 * 60 * 1000)
+    );
+
+    return weeksDiff >= 0 && weeksDiff % recurrenceInterval === 0;
+  }
+
+  return true;
+}
+
 /**
- * Check if care giver is available - WITH ALL SETTINGS
+ * Check if care giver is available
  */
 async function isCareGiverAvailable(
   careGiverId,
   date,
   startTime,
   endTime,
-  careReceiverLocation
+  careReceiverLocation,
+  excludeAppointmentId = null // NEW: Exclude specific appointment when checking (for secondary CG)
 ) {
   const result = {
     available: false,
@@ -82,57 +131,66 @@ async function isCareGiverAvailable(
     conflicts: [],
   };
 
-  // Get settings
   const settings = await settingsService.getSchedulingSettings();
   const travelTimeBuffer = settings.travelTimeBufferMinutes || 15;
   const maxAppointmentsPerDay = settings.maxAppointmentsPerDay || 8;
 
-  console.log(
-    `[Settings] Travel buffer: ${travelTimeBuffer} min, Max appointments/day: ${maxAppointmentsPerDay}`
-  );
-
-  // 1. Check care giver exists and is active
   const careGiver = await CareGiver.findById(careGiverId);
   if (!careGiver || !careGiver.isActive) {
     result.reason = careGiver
       ? "Care giver is inactive"
       : "Care giver not found";
-    console.log(`[Availability Check] ${result.reason} for ${careGiverId}`);
     return result;
   }
 
-  // 2. Try to get availability from Availability collection
+  // Check time off with UTC comparison
+  if (careGiver.timeOff && careGiver.timeOff.length > 0) {
+    const checkDate = new Date(date);
+    const utcCheckDate = Date.UTC(
+      checkDate.getUTCFullYear(),
+      checkDate.getUTCMonth(),
+      checkDate.getUTCDate()
+    );
+
+    for (const timeOff of careGiver.timeOff) {
+      const timeOffStartDate = new Date(timeOff.startDate);
+      const utcStart = Date.UTC(
+        timeOffStartDate.getUTCFullYear(),
+        timeOffStartDate.getUTCMonth(),
+        timeOffStartDate.getUTCDate()
+      );
+
+      const timeOffEndDate = new Date(timeOff.endDate);
+      const utcEnd = Date.UTC(
+        timeOffEndDate.getUTCFullYear(),
+        timeOffEndDate.getUTCMonth(),
+        timeOffEndDate.getUTCDate(),
+        23,
+        59,
+        59,
+        999
+      );
+
+      const isInRange = utcCheckDate >= utcStart && utcCheckDate <= utcEnd;
+
+      if (isInRange) {
+        result.reason = `Care giver is on time off (${timeOff.reason || "Personal"})`;
+        return result;
+      }
+    }
+  }
+
+  // Get availability
   let availability = await Availability.getCurrentForCareGiver(
     careGiverId,
     date
   );
 
-  // 3. FALLBACK: If no availability document or incomplete, use embedded availability
   if (
     !availability ||
     !availability.schedule ||
     availability.schedule.length === 0
   ) {
-    console.log(
-      `[Availability Check] Using embedded availability for ${careGiver.name}`
-    );
-
-    // Check embedded time off
-    if (careGiver.timeOff && careGiver.timeOff.length > 0) {
-      for (const timeOff of careGiver.timeOff) {
-        const timeOffStart = new Date(timeOff.startDate);
-        const timeOffEnd = new Date(timeOff.endDate);
-        if (date >= timeOffStart && date <= timeOffEnd) {
-          result.reason = "Care giver is on time off";
-          console.log(
-            `[Availability Check] ${result.reason} for ${careGiver.name}`
-          );
-          return result;
-        }
-      }
-    }
-
-    // Use embedded availability schedule
     if (careGiver.availability && careGiver.availability.length > 0) {
       const dayOfWeek = date.toLocaleDateString("en-GB", { weekday: "long" });
       const daySchedule = careGiver.availability.find(
@@ -141,7 +199,6 @@ async function isCareGiverAvailable(
 
       if (!daySchedule || daySchedule.slots.length === 0) {
         result.reason = `Not working on ${dayOfWeek}`;
-        console.log(`[Availability Check] ${result.reason}`);
         return result;
       }
 
@@ -151,28 +208,13 @@ async function isCareGiverAvailable(
 
       if (!isInWorkingHours) {
         result.reason = "Outside working hours";
-        console.log(`[Availability Check] ${result.reason}`);
         return result;
       }
     } else {
       result.reason = "No availability schedule defined";
-      console.log(`[Availability Check] ${result.reason}`);
       return result;
     }
   } else {
-    // Use Availability collection data
-    console.log(
-      `[Availability Check] Using Availability collection for ${careGiver.name}`
-    );
-
-    // Check time off
-    if (availability.isOnTimeOff(date)) {
-      result.reason = "Care giver is on time off";
-      console.log(`[Availability Check] ${result.reason}`);
-      return result;
-    }
-
-    // Check working hours
     const dayOfWeek = date.toLocaleDateString("en-GB", { weekday: "long" });
     const daySchedule = availability.schedule.find(
       (s) => s.dayOfWeek === dayOfWeek
@@ -180,7 +222,6 @@ async function isCareGiverAvailable(
 
     if (!daySchedule || daySchedule.slots.length === 0) {
       result.reason = `Not working on ${dayOfWeek}`;
-      console.log(`[Availability Check] ${result.reason}`);
       return result;
     }
 
@@ -190,33 +231,33 @@ async function isCareGiverAvailable(
 
     if (!isInWorkingHours) {
       result.reason = "Outside working hours";
-      console.log(`[Availability Check] ${result.reason}`);
       return result;
     }
   }
 
-  // 4. Check appointment conflicts
+  // Check appointment conflicts
   const startOfDay = new Date(date);
   startOfDay.setHours(0, 0, 0, 0);
   const endOfDay = new Date(date);
   endOfDay.setHours(23, 59, 59, 999);
 
-  const existingAppointments = await Appointment.find({
+  const query = {
     $or: [{ careGiver: careGiverId }, { secondaryCareGiver: careGiverId }],
     date: { $gte: startOfDay, $lte: endOfDay },
     status: { $in: ["scheduled", "in_progress"] },
-  })
+  };
+
+  // NEW: Exclude specific appointment if checking for secondary CG
+  if (excludeAppointmentId) {
+    query._id = { $ne: excludeAppointmentId };
+  }
+
+  const existingAppointments = await Appointment.find(query)
     .populate("careReceiver", "name coordinates")
     .sort({ startTime: 1 });
 
-  console.log(
-    `[Availability Check] Found ${existingAppointments.length} existing appointments`
-  );
-
-  // NEW: Check max appointments per day BEFORE checking conflicts
   if (existingAppointments.length >= maxAppointmentsPerDay) {
-    result.reason = `Already has ${existingAppointments.length} appointments (max ${maxAppointmentsPerDay} per day)`;
-    console.log(`[Availability Check] ❌ ${result.reason}`);
+    result.reason = `Already has ${existingAppointments.length} appointments (max ${maxAppointmentsPerDay})`;
     return result;
   }
 
@@ -229,14 +270,11 @@ async function isCareGiverAvailable(
     ) {
       result.reason = "Time slot conflicts with existing appointment";
       result.conflicts.push({ type: "time_overlap", appointment: apt });
-      console.log(
-        `[Availability Check] Time conflict: ${apt.startTime}-${apt.endTime}`
-      );
       return result;
     }
   }
 
-  // 5. Check travel time conflicts WITH BUFFER FROM SETTINGS
+  // Check travel time conflicts
   const appointmentsBefore = existingAppointments.filter(
     (apt) => apt.endTime <= startTime
   );
@@ -246,34 +284,29 @@ async function isCareGiverAvailable(
 
   if (appointmentsBefore.length > 0) {
     const lastAppointment = appointmentsBefore[appointmentsBefore.length - 1];
-
     if (lastAppointment.careReceiver?.coordinates) {
       const travelTime = await calculateTravelTime(
         lastAppointment.careReceiver.coordinates.coordinates,
         careReceiverLocation
       );
 
-      const requiredTime = travelTime + travelTimeBuffer;
-
-      const [lastEndH, lastEndM] = lastAppointment.endTime
+      const [lastHours, lastMinutes] = lastAppointment.endTime
         .split(":")
         .map(Number);
-      const [newStartH, newStartM] = startTime.split(":").map(Number);
-      const gapMinutes =
-        newStartH * 60 + newStartM - (lastEndH * 60 + lastEndM);
+      const [newHours, newMinutes] = startTime.split(":").map(Number);
+      const lastEndMinutes = lastHours * 60 + lastMinutes;
+      const newStartMinutes = newHours * 60 + newMinutes;
+      const gapMinutes = newStartMinutes - lastEndMinutes;
+      const requiredGap = travelTime + travelTimeBuffer;
 
-      if (gapMinutes < requiredTime) {
-        result.reason = "Insufficient travel time from previous appointment";
+      if (gapMinutes < requiredGap) {
+        result.reason = `Insufficient travel time from previous appointment (needs ${requiredGap} min, has ${gapMinutes} min)`;
         result.conflicts.push({
-          type: "travel_time_before",
-          requiredTime: requiredTime,
-          availableTime: gapMinutes,
-          travelTime: travelTime,
-          buffer: travelTimeBuffer,
+          type: "travel_time",
+          appointment: lastAppointment,
+          requiredGap,
+          actualGap: gapMinutes,
         });
-        console.log(
-          `[Availability Check] Travel time conflict: need ${requiredTime}min (${travelTime}min travel + ${travelTimeBuffer}min buffer), have ${gapMinutes}min`
-        );
         return result;
       }
     }
@@ -281,34 +314,29 @@ async function isCareGiverAvailable(
 
   if (appointmentsAfter.length > 0) {
     const nextAppointment = appointmentsAfter[0];
-
     if (nextAppointment.careReceiver?.coordinates) {
       const travelTime = await calculateTravelTime(
         careReceiverLocation,
         nextAppointment.careReceiver.coordinates.coordinates
       );
 
-      const requiredTime = travelTime + travelTimeBuffer;
-
-      const [newEndH, newEndM] = endTime.split(":").map(Number);
-      const [nextStartH, nextStartM] = nextAppointment.startTime
+      const [newHours, newMinutes] = endTime.split(":").map(Number);
+      const [nextHours, nextMinutes] = nextAppointment.startTime
         .split(":")
         .map(Number);
-      const gapMinutes =
-        nextStartH * 60 + nextStartM - (newEndH * 60 + newEndM);
+      const newEndMinutes = newHours * 60 + newMinutes;
+      const nextStartMinutes = nextHours * 60 + nextMinutes;
+      const gapMinutes = nextStartMinutes - newEndMinutes;
+      const requiredGap = travelTime + travelTimeBuffer;
 
-      if (gapMinutes < requiredTime) {
-        result.reason = "Insufficient travel time to next appointment";
+      if (gapMinutes < requiredGap) {
+        result.reason = `Insufficient travel time to next appointment (needs ${requiredGap} min, has ${gapMinutes} min)`;
         result.conflicts.push({
-          type: "travel_time_after",
-          requiredTime: requiredTime,
-          availableTime: gapMinutes,
-          travelTime: travelTime,
-          buffer: travelTimeBuffer,
+          type: "travel_time",
+          appointment: nextAppointment,
+          requiredGap,
+          actualGap: gapMinutes,
         });
-        console.log(
-          `[Availability Check] Travel time conflict to next: need ${requiredTime}min (${travelTime}min travel + ${travelTimeBuffer}min buffer), have ${gapMinutes}min`
-        );
         return result;
       }
     }
@@ -316,31 +344,40 @@ async function isCareGiverAvailable(
 
   result.available = true;
   result.reason = "Available";
-  console.log(
-    `[Availability Check] ✅ ${careGiver.name} is available (${existingAppointments.length}/${maxAppointmentsPerDay} appointments)`
-  );
   return result;
 }
 
 /**
- * Find best care giver for a visit - WITH MAX DISTANCE FROM SETTINGS
+ * Find best care giver for a visit
  */
-async function findBestCareGiver(careReceiver, visit, date) {
+async function findBestCareGiver(
+  careReceiver,
+  visit,
+  date,
+  excludeCareGiverId = null
+) {
   console.log(
-    `\n[Find Best] Looking for care giver for Visit ${visit.visitNumber} on ${date.toISOString().split("T")[0]}`
+    `\n[Find Best] Looking for care giver for Visit ${visit.visitNumber}`
   );
   console.log(`[Find Best] Requirements: ${visit.requirements.join(", ")}`);
 
-  // Get settings
+  if (excludeCareGiverId) {
+    console.log(`[Find Best] Excluding care giver: ${excludeCareGiverId}`);
+  }
+
   const settings = await settingsService.getSchedulingSettings();
   const maxDistanceKm = settings.maxDistanceKm || 20;
   const maxDistanceMeters = maxDistanceKm * 1000;
-  console.log(`[Settings] Using max distance: ${maxDistanceKm} km`);
 
   const query = {
     isActive: true,
     skills: { $all: visit.requirements },
   };
+
+  // NEW: Exclude specific care giver (for finding secondary CG)
+  if (excludeCareGiverId) {
+    query._id = { $ne: excludeCareGiverId };
+  }
 
   if (careReceiver.genderPreference !== "No Preference") {
     query.gender = careReceiver.genderPreference;
@@ -362,13 +399,10 @@ async function findBestCareGiver(careReceiver, visit, date) {
 
   const potentialCareGivers = await CareGiver.find(query).limit(50);
   console.log(
-    `[Find Best] Found ${potentialCareGivers.length} care givers with required skills within ${maxDistanceKm}km`
+    `[Find Best] Found ${potentialCareGivers.length} potential care givers`
   );
 
   if (potentialCareGivers.length === 0) {
-    console.log(
-      "[Find Best] ❌ No care givers have required skills within distance limit"
-    );
     return {
       careGiver: null,
       reason: `No care givers with required skills within ${maxDistanceKm}km`,
@@ -382,8 +416,6 @@ async function findBestCareGiver(careReceiver, visit, date) {
   const scoredCareGivers = [];
 
   for (const cg of potentialCareGivers) {
-    console.log(`\n[Find Best] Checking ${cg.name}...`);
-
     const availabilityCheck = await isCareGiverAvailable(
       cg._id,
       date,
@@ -406,19 +438,11 @@ async function findBestCareGiver(careReceiver, visit, date) {
         score -= 10;
       }
 
-      console.log(
-        `[Find Best] ✅ ${cg.name} is available, distance: ${distance.toFixed(2)}km, score: ${score.toFixed(2)}`
-      );
       scoredCareGivers.push({ careGiver: cg, score, distance });
-    } else {
-      console.log(
-        `[Find Best] ❌ ${cg.name} not available: ${availabilityCheck.reason}`
-      );
     }
   }
 
   if (scoredCareGivers.length === 0) {
-    console.log("[Find Best] ❌ No available care givers found");
     return {
       careGiver: null,
       reason: "All care givers are unavailable or have conflicts",
@@ -430,8 +454,43 @@ async function findBestCareGiver(careReceiver, visit, date) {
   return { careGiver: scoredCareGivers[0].careGiver, reason: null };
 }
 
+// ========================================
+// NEW: Find SECOND care giver for double-handed care
+// ========================================
+async function findSecondaryCareGiver(
+  careReceiver,
+  visit,
+  date,
+  primaryCareGiverId
+) {
+  console.log(
+    `\n[Find Secondary] Looking for SECOND care giver (double-handed)`
+  );
+  console.log(`[Find Secondary] Primary CG: ${primaryCareGiverId}`);
+
+  // Find second care giver, excluding the primary one
+  const result = await findBestCareGiver(
+    careReceiver,
+    visit,
+    date,
+    primaryCareGiverId
+  );
+
+  if (result.careGiver) {
+    console.log(
+      `[Find Secondary] ✅ Found secondary: ${result.careGiver.name}`
+    );
+  } else {
+    console.log(`[Find Secondary] ❌ No secondary care giver available`);
+  }
+
+  return result;
+}
+// ========================================
+
 /**
  * Schedule all daily visits for a care receiver for a date range
+ * ENHANCED: Supports flexible scheduling + double-handed care
  */
 async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
   const careReceiver = await CareReceiver.findById(careReceiverId);
@@ -460,60 +519,130 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
     console.log(`\n--- Processing Date: ${dateStr} ---`);
 
     for (const visit of careReceiver.dailyVisits) {
+      // Check if visit should occur on this date
+      if (!shouldVisitOccur(visit, currentDate, careReceiver.createdAt)) {
+        console.log(
+          `[Schedule] ⏭️ Visit ${visit.visitNumber} does not occur on ${dateStr} (not in schedule)`
+        );
+        continue;
+      }
+
       console.log(
-        `\nProcessing Visit ${visit.visitNumber} (${visit.preferredTime})`
+        `\n[Schedule] Processing Visit ${visit.visitNumber} (${visit.preferredTime})`
       );
 
-      const bestCareGiverResult = await findBestCareGiver(
+      // Check if double-handed care required
+      if (visit.doubleHanded) {
+        console.log(`[Schedule] 🤝 DOUBLE-HANDED CARE REQUIRED`);
+      }
+
+      // Find primary care giver
+      const primaryCGResult = await findBestCareGiver(
         careReceiver,
         visit,
         currentDate
       );
 
-      if (bestCareGiverResult.careGiver) {
-        const [hours, minutes] = visit.preferredTime.split(":").map(Number);
-        const endMinutes = minutes + visit.duration;
-        const endTime = `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
-
-        try {
-          const appointment = await Appointment.create({
-            careReceiver: careReceiver._id,
-            careGiver: bestCareGiverResult.careGiver._id,
-            date: new Date(currentDate),
-            startTime: visit.preferredTime,
-            endTime,
-            duration: visit.duration,
-            visitNumber: visit.visitNumber,
-            requirements: visit.requirements,
-            doubleHanded: visit.doubleHanded || false,
-            priority: visit.priority || 3,
-            notes: visit.notes || "",
-            status: "scheduled",
-            schedulingMetadata: {
-              scheduledAt: new Date(),
-              schedulingMethod: "automatic",
-              algorithmVersion: "2.0",
-            },
-          });
-
-          scheduled.push(appointment);
-          console.log(
-            `✅ Scheduled with ${bestCareGiverResult.careGiver.name}`
-          );
-        } catch (error) {
-          console.error(`❌ Failed to create appointment: ${error.message}`);
-          failed.push({
-            visit,
-            date: dateStr,
-            reason: error.message,
-          });
-        }
-      } else {
-        console.log(`❌ Failed: ${bestCareGiverResult.reason}`);
+      if (!primaryCGResult.careGiver) {
+        console.log(`[Schedule] ❌ Failed: ${primaryCGResult.reason}`);
         failed.push({
           visit,
           date: dateStr,
-          reason: bestCareGiverResult.reason,
+          reason: primaryCGResult.reason,
+        });
+        continue;
+      }
+
+      let secondaryCareGiver = null;
+
+      // ========================================
+      // NEW: Find SECOND care giver if double-handed
+      // ========================================
+      if (visit.doubleHanded) {
+        const secondaryCGResult = await findSecondaryCareGiver(
+          careReceiver,
+          visit,
+          currentDate,
+          primaryCGResult.careGiver._id
+        );
+
+        if (!secondaryCGResult.careGiver) {
+          console.log(
+            `[Schedule] ❌ Failed: ${secondaryCGResult.reason} (secondary CG not found)`
+          );
+          failed.push({
+            visit,
+            date: dateStr,
+            reason: `Primary CG found, but no secondary CG available: ${secondaryCGResult.reason}`,
+          });
+          continue;
+        }
+
+        secondaryCareGiver = secondaryCGResult.careGiver;
+        console.log(
+          `[Schedule] 🤝 Double-handed: ${primaryCGResult.careGiver.name} + ${secondaryCareGiver.name}`
+        );
+      }
+      // ========================================
+
+      // Calculate end time
+      const [hours, minutes] = visit.preferredTime.split(":").map(Number);
+      const endMinutes = minutes + visit.duration;
+      const endTime = `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
+
+      // Normalize appointment date to UTC midnight
+      const appointmentDate = new Date(currentDate);
+      const utcAppointmentDate = new Date(
+        Date.UTC(
+          appointmentDate.getFullYear(),
+          appointmentDate.getMonth(),
+          appointmentDate.getDate()
+        )
+      );
+
+      try {
+        const appointmentData = {
+          careReceiver: careReceiver._id,
+          careGiver: primaryCGResult.careGiver._id,
+          date: utcAppointmentDate,
+          startTime: visit.preferredTime,
+          endTime,
+          duration: visit.duration,
+          visitNumber: visit.visitNumber,
+          requirements: visit.requirements,
+          doubleHanded: visit.doubleHanded || false,
+          priority: visit.priority || 3,
+          notes: visit.notes || "",
+          status: "scheduled",
+          schedulingMetadata: {
+            scheduledAt: new Date(),
+            schedulingMethod: "automatic",
+            algorithmVersion: "2.1-double-handed",
+          },
+        };
+
+        // Add secondary care giver if double-handed
+        if (secondaryCareGiver) {
+          appointmentData.secondaryCareGiver = secondaryCareGiver._id;
+        }
+
+        const appointment = await Appointment.create(appointmentData);
+
+        scheduled.push(appointment);
+
+        if (secondaryCareGiver) {
+          console.log(
+            `✅ Scheduled (DOUBLE-HANDED) with ${primaryCGResult.careGiver.name} + ${secondaryCareGiver.name}`
+          );
+        } else {
+          console.log(`✅ Scheduled with ${primaryCGResult.careGiver.name}`);
+        }
+      } catch (error) {
+        console.error(`❌ Failed to create appointment: ${error.message}`);
+        failed.push({
+          visit,
+          date: dateStr,
+          reason: error.message,
         });
       }
     }
@@ -524,7 +653,7 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
   console.log(`\n========================================`);
   console.log(`SCHEDULING COMPLETE: ${careReceiver.name}`);
   console.log(`Scheduled: ${scheduled.length}`);
-  console.log(`Failed: ${failed.length}`);
+  console.log(`Skipped/Failed: ${failed.length}`);
   console.log(`========================================\n`);
 
   return { scheduled, failed };
@@ -563,4 +692,6 @@ module.exports = {
   isCareGiverAvailable,
   calculateDistance,
   calculateTravelTime,
+  shouldVisitOccur,
+  findSecondaryCareGiver, // NEW: Export for use in other modules
 };
