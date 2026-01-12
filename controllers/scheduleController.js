@@ -9,6 +9,7 @@ const {
   scheduleForCareReceiver,
   bulkSchedule,
   findBestCareGiver,
+  isDateInSchedule,
 } = require("../services/schedulingService");
 const notificationService = require("../services/notificationService");
 
@@ -44,8 +45,7 @@ exports.generateSchedule = async (req, res, next) => {
     const start = new Date(startDate);
     start.setHours(0, 0, 0, 0); // Start of day
 
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999); // END of day (includes entire day)
+    const end = new Date(endDate + "T23:59:59.999Z"); // END of day (includes entire day)
 
     console.log("Start date:", start.toISOString());
     console.log("End date:", end.toISOString());
@@ -251,30 +251,45 @@ exports.getUnscheduled = async (req, res, next) => {
         appointmentMap.set(visitKey, apt);
       });
 
-      // Find missing appointments with reasons
+      // FIXED: Calculate expected appointments using isDateInSchedule
+      let expectedCount = 0;
       const details = [];
+
       for (const date of dates) {
         const dateStr = date.toISOString().split("T")[0];
 
         for (const visit of cr.dailyVisits) {
-          const visitKey = `${dateStr}-${visit.visitNumber}`;
+          // ✅ FIXED: Check if this date matches the visit's schedule
+          const shouldHaveAppointment = isDateInSchedule(
+            date,
+            visit,
+            cr.createdAt
+          );
 
-          if (!appointmentMap.has(visitKey)) {
-            // This appointment is missing - analyze why
-            const reason = await findSchedulingFailureReason(cr, visit, date);
+          if (shouldHaveAppointment) {
+            expectedCount++; // Count this as an expected appointment
 
-            details.push({
-              date: dateStr,
-              visitNumber: visit.visitNumber,
-              preferredTime: visit.preferredTime,
-              duration: visit.duration,
-              requirements: visit.requirements,
-              doubleHanded: visit.doubleHanded,
-              priority: visit.priority,
-              notes: visit.notes,
-              reason: reason,
-            });
+            const visitKey = `${dateStr}-${visit.visitNumber}`;
+
+            if (!appointmentMap.has(visitKey)) {
+              // This appointment should exist but doesn't - it's missing
+              const reason = await findSchedulingFailureReason(cr, visit, date);
+
+              details.push({
+                date: dateStr,
+                visitNumber: visit.visitNumber,
+                preferredTime: visit.preferredTime,
+                duration: visit.duration,
+                requirements: visit.requirements,
+                doubleHanded: visit.doubleHanded,
+                priority: visit.priority,
+                notes: visit.notes,
+                reason: reason,
+              });
+            }
           }
+          // If shouldHaveAppointment is false, we skip this date entirely
+          // (it's not part of the schedule, so we don't count it as missing)
         }
       }
 
@@ -288,7 +303,7 @@ exports.getUnscheduled = async (req, res, next) => {
             address: cr.address,
             coordinates: cr.coordinates,
           },
-          expected: dates.length * cr.dailyVisits.length,
+          expected: expectedCount, // ✅ FIXED: Use calculated count, not dates.length * visits.length
           actual: existingAppointments.length,
           missing: details.length,
           details: details,
@@ -1199,16 +1214,13 @@ exports.deleteAppointment = async (req, res, next) => {
 // Helper to find why scheduling failed (ANALYSIS ONLY - NO CREATION)
 async function findSchedulingFailureReason(careReceiver, visit, date) {
   try {
-    const [hours, minutes] = visit.preferredTime.split(":").map(Number);
-    const endMinutes = minutes + visit.duration;
-    const endTime = `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
-
+    // ✅ FIXED: Don't pass time parameters - findBestCareGiver calculates them from visit
+    // The 4th parameter is excludeCareGiverId, not startTime!
     const bestCareGiver = await findBestCareGiver(
       careReceiver,
       visit,
-      date,
-      visit.preferredTime,
-      endTime
+      date
+      // Don't pass excludeCareGiverId unless we actually want to exclude a care giver
     );
 
     if (bestCareGiver.careGiver) {
@@ -1251,8 +1263,7 @@ exports.validateSchedule = async (req, res, next) => {
     const start = new Date(startDate);
     start.setHours(0, 0, 0, 0);
 
-    const end = new Date(endDate);
-    end.setHours(23, 59, 59, 999);
+    const end = new Date(endDate + "T23:59:59.999Z");
 
     // Get all scheduled appointments in range
     const appointments = await Appointment.find({

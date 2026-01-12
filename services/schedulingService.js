@@ -1,5 +1,5 @@
 // backend/services/schedulingService.js
-// FIXED - UTC timezone + DOUBLE-HANDED CARE support
+// CORRECTED - UTC timezone + Proper preferred days validation + Double-handed care
 
 const Availability = require("../models/Availability");
 const CareGiver = require("../models/CareGiver");
@@ -66,51 +66,105 @@ function calculateDistance(coords1, coords2) {
   return R * c;
 }
 
-// NEW: Check if visit should occur on specific date
-function shouldVisitOccur(visit, checkDate, careReceiverCreatedAt) {
-  const dayOfWeek = checkDate.toLocaleDateString("en-GB", { weekday: "long" });
-
-  const daysOfWeek = visit.daysOfWeek || [
+/**
+ * FIXED: Check if a date matches the visit's schedule preferences
+ * Uses UTC dates to avoid timezone issues
+ *
+ * @param {Date} checkDate - The date to check (as Date object)
+ * @param {Object} visit - The visit object with daysOfWeek, recurrencePattern, etc.
+ * @param {Date} careReceiverCreatedAt - When care receiver was created (for recurrence start)
+ * @returns {boolean} - True if visit should occur on this date
+ */
+function isDateInSchedule(checkDate, visit, careReceiverCreatedAt) {
+  // Get day of week using UTC (0=Sunday, 1=Monday, ..., 6=Saturday)
+  const utcDay = checkDate.getUTCDay();
+  const dayNames = [
+    "Sunday",
     "Monday",
     "Tuesday",
     "Wednesday",
     "Thursday",
     "Friday",
     "Saturday",
-    "Sunday",
   ];
-  if (!daysOfWeek.includes(dayOfWeek)) {
-    return false;
+  const dayOfWeek = dayNames[utcDay];
+
+  // Check if visit has daysOfWeek defined
+  if (!visit.daysOfWeek || visit.daysOfWeek.length === 0) {
+    console.log(
+      `⚠️  Warning: No daysOfWeek defined for visit ${visit.visitNumber}, defaulting to all days`
+    );
+    // If no daysOfWeek specified, default to all 7 days
+    visit.daysOfWeek = dayNames;
   }
 
+  // First check: Is this day of week in the allowed days?
+  if (!visit.daysOfWeek.includes(dayOfWeek)) {
+    return false; // Not in allowed days
+  }
+
+  // Get recurrence pattern (default to weekly)
   const recurrencePattern = visit.recurrencePattern || "weekly";
+  const recurrenceInterval = visit.recurrenceInterval || 1;
 
-  if (recurrencePattern === "weekly") {
-    return true;
+  // Weekly pattern - day is already validated above
+  if (recurrencePattern === "weekly" && recurrenceInterval === 1) {
+    return true; // Day matches, and it's weekly
   }
 
+  // For biweekly, monthly, or custom intervals, we need a start date
   if (
     recurrencePattern === "biweekly" ||
     recurrencePattern === "monthly" ||
     recurrencePattern === "custom"
   ) {
-    const startDate =
-      visit.recurrenceStartDate || careReceiverCreatedAt || new Date();
-    const recurrenceInterval = visit.recurrenceInterval || 1;
+    const startDate = visit.recurrenceStartDate
+      ? new Date(visit.recurrenceStartDate)
+      : careReceiverCreatedAt
+        ? new Date(careReceiverCreatedAt)
+        : new Date();
 
-    const checkDateStart = new Date(checkDate);
-    checkDateStart.setHours(0, 0, 0, 0);
-
-    const startDateStart = new Date(startDate);
-    startDateStart.setHours(0, 0, 0, 0);
-
-    const weeksDiff = Math.floor(
-      (checkDateStart - startDateStart) / (7 * 24 * 60 * 60 * 1000)
+    // Normalize both dates to UTC midnight for accurate comparison
+    const startUTC = Date.UTC(
+      startDate.getUTCFullYear(),
+      startDate.getUTCMonth(),
+      startDate.getUTCDate()
     );
 
-    return weeksDiff >= 0 && weeksDiff % recurrenceInterval === 0;
+    const checkUTC = Date.UTC(
+      checkDate.getUTCFullYear(),
+      checkDate.getUTCMonth(),
+      checkDate.getUTCDate()
+    );
+
+    // Calculate difference in days
+    const daysDiff = Math.floor((checkUTC - startUTC) / (24 * 60 * 60 * 1000));
+
+    if (daysDiff < 0) {
+      return false; // Before start date
+    }
+
+    // For biweekly: check if it's the right week
+    if (recurrencePattern === "biweekly") {
+      const weeksDiff = Math.floor(daysDiff / 7);
+      return weeksDiff % recurrenceInterval === 0;
+    }
+
+    // For monthly: check if it's the right month interval
+    if (recurrencePattern === "monthly") {
+      const monthsDiff =
+        (checkDate.getUTCFullYear() - startDate.getUTCFullYear()) * 12 +
+        (checkDate.getUTCMonth() - startDate.getUTCMonth());
+      return monthsDiff >= 0 && monthsDiff % recurrenceInterval === 0;
+    }
+
+    // For custom: use days-based interval
+    if (recurrencePattern === "custom") {
+      return daysDiff % recurrenceInterval === 0;
+    }
   }
 
+  // Default: if day matches and pattern is not recognized, allow it
   return true;
 }
 
@@ -123,7 +177,7 @@ async function isCareGiverAvailable(
   startTime,
   endTime,
   careReceiverLocation,
-  excludeAppointmentId = null // NEW: Exclude specific appointment when checking (for secondary CG)
+  excludeAppointmentId = null
 ) {
   const result = {
     available: false,
@@ -192,7 +246,19 @@ async function isCareGiverAvailable(
     availability.schedule.length === 0
   ) {
     if (careGiver.availability && careGiver.availability.length > 0) {
-      const dayOfWeek = date.toLocaleDateString("en-GB", { weekday: "long" });
+      // Use UTC day of week
+      const utcDay = date.getUTCDay();
+      const dayNames = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+      ];
+      const dayOfWeek = dayNames[utcDay];
+
       const daySchedule = careGiver.availability.find(
         (a) => a.dayOfWeek === dayOfWeek
       );
@@ -215,7 +281,19 @@ async function isCareGiverAvailable(
       return result;
     }
   } else {
-    const dayOfWeek = date.toLocaleDateString("en-GB", { weekday: "long" });
+    // Use UTC day of week
+    const utcDay = date.getUTCDay();
+    const dayNames = [
+      "Sunday",
+      "Monday",
+      "Tuesday",
+      "Wednesday",
+      "Thursday",
+      "Friday",
+      "Saturday",
+    ];
+    const dayOfWeek = dayNames[utcDay];
+
     const daySchedule = availability.schedule.find(
       (s) => s.dayOfWeek === dayOfWeek
     );
@@ -237,9 +315,9 @@ async function isCareGiverAvailable(
 
   // Check appointment conflicts
   const startOfDay = new Date(date);
-  startOfDay.setHours(0, 0, 0, 0);
+  startOfDay.setUTCHours(0, 0, 0, 0);
   const endOfDay = new Date(date);
-  endOfDay.setHours(23, 59, 59, 999);
+  endOfDay.setUTCHours(23, 59, 59, 999);
 
   const query = {
     $or: [{ careGiver: careGiverId }, { secondaryCareGiver: careGiverId }],
@@ -247,7 +325,6 @@ async function isCareGiverAvailable(
     status: { $in: ["scheduled", "in_progress"] },
   };
 
-  // NEW: Exclude specific appointment if checking for secondary CG
   if (excludeAppointmentId) {
     query._id = { $ne: excludeAppointmentId };
   }
@@ -374,7 +451,6 @@ async function findBestCareGiver(
     skills: { $all: visit.requirements },
   };
 
-  // NEW: Exclude specific care giver (for finding secondary CG)
   if (excludeCareGiverId) {
     query._id = { $ne: excludeCareGiverId };
   }
@@ -454,9 +530,9 @@ async function findBestCareGiver(
   return { careGiver: scoredCareGivers[0].careGiver, reason: null };
 }
 
-// ========================================
-// NEW: Find SECOND care giver for double-handed care
-// ========================================
+/**
+ * Find SECOND care giver for double-handed care
+ */
 async function findSecondaryCareGiver(
   careReceiver,
   visit,
@@ -468,7 +544,6 @@ async function findSecondaryCareGiver(
   );
   console.log(`[Find Secondary] Primary CG: ${primaryCareGiverId}`);
 
-  // Find second care giver, excluding the primary one
   const result = await findBestCareGiver(
     careReceiver,
     visit,
@@ -486,11 +561,34 @@ async function findSecondaryCareGiver(
 
   return result;
 }
-// ========================================
+
+/**
+ * Format date for logging
+ */
+function formatDateForLog(date) {
+  const utcDay = date.getUTCDay();
+  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const monthNames = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
+
+  return `${dayNames[utcDay]} ${monthNames[date.getUTCMonth()]} ${date.getUTCDate()}`;
+}
 
 /**
  * Schedule all daily visits for a care receiver for a date range
- * ENHANCED: Supports flexible scheduling + double-handed care
+ * FIXED: Uses isDateInSchedule() to properly validate preferred days
  */
 async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
   const careReceiver = await CareReceiver.findById(careReceiverId);
@@ -513,22 +611,29 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
   const scheduled = [];
   const failed = [];
 
-  const currentDate = new Date(startDate);
+  // Create a copy of startDate to avoid mutation
+  const currentDate = new Date(startDate.getTime());
+
   while (currentDate <= endDate) {
     const dateStr = currentDate.toISOString().split("T")[0];
-    console.log(`\n--- Processing Date: ${dateStr} ---`);
+    const dayName = formatDateForLog(currentDate);
+
+    console.log(`\n--- Processing Date: ${dateStr} (${dayName}) ---`);
 
     for (const visit of careReceiver.dailyVisits) {
-      // Check if visit should occur on this date
-      if (!shouldVisitOccur(visit, currentDate, careReceiver.createdAt)) {
+      // FIXED: Use isDateInSchedule() instead of shouldVisitOccur()
+      if (!isDateInSchedule(currentDate, visit, careReceiver.createdAt)) {
+        const visitDays = visit.daysOfWeek
+          ? visit.daysOfWeek.join("/")
+          : "all days";
         console.log(
-          `[Schedule] ⏭️ Visit ${visit.visitNumber} does not occur on ${dateStr} (not in schedule)`
+          `[Schedule] ⏭️  Skipping ${dayName} - Visit ${visit.visitNumber} not scheduled (schedule: ${visitDays})`
         );
         continue;
       }
 
       console.log(
-        `\n[Schedule] Processing Visit ${visit.visitNumber} (${visit.preferredTime})`
+        `\n[Schedule] ✓ Processing Visit ${visit.visitNumber} (${visit.preferredTime}) - matches schedule`
       );
 
       // Check if double-handed care required
@@ -555,9 +660,7 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
 
       let secondaryCareGiver = null;
 
-      // ========================================
-      // NEW: Find SECOND care giver if double-handed
-      // ========================================
+      // Find SECOND care giver if double-handed
       if (visit.doubleHanded) {
         const secondaryCGResult = await findSecondaryCareGiver(
           careReceiver,
@@ -583,7 +686,6 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
           `[Schedule] 🤝 Double-handed: ${primaryCGResult.careGiver.name} + ${secondaryCareGiver.name}`
         );
       }
-      // ========================================
 
       // Calculate end time
       const [hours, minutes] = visit.preferredTime.split(":").map(Number);
@@ -594,13 +696,28 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
       const appointmentDate = new Date(currentDate);
       const utcAppointmentDate = new Date(
         Date.UTC(
-          appointmentDate.getFullYear(),
-          appointmentDate.getMonth(),
-          appointmentDate.getDate()
+          appointmentDate.getUTCFullYear(),
+          appointmentDate.getUTCMonth(),
+          appointmentDate.getUTCDate()
         )
       );
 
       try {
+        // ✅ FIXED: Check for duplicate appointments before creating
+        const existingAppointment = await Appointment.findOne({
+          careReceiver: careReceiver._id,
+          date: utcAppointmentDate,
+          visitNumber: visit.visitNumber,
+          status: { $in: ["scheduled", "in_progress", "completed"] },
+        });
+
+        if (existingAppointment) {
+          console.log(
+            `⏭️  Skipping ${dayName} Visit ${visit.visitNumber} - appointment already exists`
+          );
+          continue;
+        }
+
         const appointmentData = {
           careReceiver: careReceiver._id,
           careGiver: primaryCGResult.careGiver._id,
@@ -617,7 +734,7 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
           schedulingMetadata: {
             scheduledAt: new Date(),
             schedulingMethod: "automatic",
-            algorithmVersion: "2.1-double-handed",
+            algorithmVersion: "3.0-preferred-days-fixed",
           },
         };
 
@@ -647,7 +764,8 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
       }
     }
 
-    currentDate.setDate(currentDate.getDate() + 1);
+    // Move to next day
+    currentDate.setUTCDate(currentDate.getUTCDate() + 1);
   }
 
   console.log(`\n========================================`);
@@ -692,6 +810,6 @@ module.exports = {
   isCareGiverAvailable,
   calculateDistance,
   calculateTravelTime,
-  shouldVisitOccur,
-  findSecondaryCareGiver, // NEW: Export for use in other modules
+  isDateInSchedule, // NEW: Export for testing
+  findSecondaryCareGiver,
 };
