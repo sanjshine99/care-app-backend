@@ -73,34 +73,34 @@ exports.analyzeUnscheduledAppointment = async (req, res) => {
         ) {
           analysis.canAssign = false;
           analysis.rejectionReasons.push(
-            `Gender mismatch: Care receiver prefers ${careReceiver.genderPreference}, care giver is ${careGiver.gender}`
+            `Gender mismatch: Care receiver prefers ${careReceiver.genderPreference}, care giver is ${careGiver.gender}`,
           );
           analysis.matchScore -= 30;
-          console.log("  ❌ Gender mismatch");
+          console.log("   Gender mismatch");
         }
 
         // Check 2: Skills match
         const requiredSkills = visit.requirements || [];
         const missingSkills = requiredSkills.filter(
-          (skill) => !careGiver.skills.includes(skill)
+          (skill) => !careGiver.skills.includes(skill),
         );
         if (missingSkills.length > 0) {
           analysis.canAssign = false;
           analysis.rejectionReasons.push(
-            `Missing required skills: ${missingSkills.map((s) => s.replace(/_/g, " ")).join(", ")}`
+            `Missing required skills: ${missingSkills.map((s) => s.replace(/_/g, " ")).join(", ")}`,
           );
           analysis.matchScore -= 25 * missingSkills.length;
-          console.log("  ❌ Missing skills:", missingSkills);
+          console.log("   Missing skills:", missingSkills);
         }
 
         // Check 3: Double-handed capability
         if (visit.doubleHanded && careGiver.singleHandedOnly) {
           analysis.canAssign = false;
           analysis.rejectionReasons.push(
-            "Care receiver requires double-handed care, but care giver can only do single-handed care"
+            "Care receiver requires double-handed care, but care giver can only do single-handed care",
           );
           analysis.matchScore -= 50;
-          console.log("  ❌ Single-handed only");
+          console.log("   Single-handed only");
         }
 
         // Check 4: Availability on this day
@@ -136,18 +136,18 @@ exports.analyzeUnscheduledAppointment = async (req, res) => {
           analysis.canAssign = false;
           analysis.rejectionReasons.push("No availability schedule configured");
           analysis.matchScore -= 100;
-          console.log("  ❌ No availability");
+          console.log("   No availability");
         } else {
           // Check day availability
           const dayAvailability = availability.schedule?.find(
-            (a) => a.dayOfWeek === dayOfWeek
+            (a) => a.dayOfWeek === dayOfWeek,
           );
 
           if (!dayAvailability || dayAvailability.slots.length === 0) {
             analysis.canAssign = false;
             analysis.rejectionReasons.push(`Not available on ${dayOfWeek}s`);
             analysis.matchScore -= 40;
-            console.log(`  ❌ Not available on ${dayOfWeek}s`);
+            console.log(`   Not available on ${dayOfWeek}s`);
           } else {
             // Check if preferred time falls within any slot
             const preferredTime = visit.preferredTime;
@@ -164,10 +164,10 @@ exports.analyzeUnscheduledAppointment = async (req, res) => {
               analysis.rejectionReasons.push(
                 `Not available at ${preferredTime} (available slots: ${dayAvailability.slots
                   .map((s) => `${s.startTime}-${s.endTime}`)
-                  .join(", ")})`
+                  .join(", ")})`,
               );
               analysis.matchScore -= 30;
-              console.log(`  ❌ Not available at ${preferredTime}`);
+              console.log(`   Not available at ${preferredTime}`);
             }
           }
 
@@ -182,7 +182,7 @@ exports.analyzeUnscheduledAppointment = async (req, res) => {
             analysis.canAssign = false;
             analysis.rejectionReasons.push(`On time off during this period`);
             analysis.matchScore -= 100;
-            console.log("  ❌ On time off");
+            console.log("   On time off");
           }
         }
 
@@ -195,17 +195,17 @@ exports.analyzeUnscheduledAppointment = async (req, res) => {
         ) {
           const distance = calculateDistance(
             careGiver.coordinates.coordinates,
-            careReceiver.coordinates.coordinates
+            careReceiver.coordinates.coordinates,
           );
           analysis.distance = distance;
 
           if (distance > maxDistance) {
             analysis.canAssign = false;
             analysis.rejectionReasons.push(
-              `Too far away: ${distance.toFixed(1)} km (max: ${maxDistance} km)`
+              `Too far away: ${distance.toFixed(1)} km (max: ${maxDistance} km)`,
             );
             analysis.matchScore -= 20;
-            console.log(`  ❌ Too far: ${distance.toFixed(1)} km`);
+            console.log(`   Too far: ${distance.toFixed(1)} km`);
           } else {
             // Bonus for being close
             const distanceScore = ((maxDistance - distance) / maxDistance) * 10;
@@ -229,11 +229,11 @@ exports.analyzeUnscheduledAppointment = async (req, res) => {
         if (appointmentCount >= maxAppointmentsPerDay) {
           analysis.canAssign = false;
           analysis.rejectionReasons.push(
-            `Already has ${appointmentCount} appointments (max: ${maxAppointmentsPerDay} per day)`
+            `Already has ${appointmentCount} appointments (max: ${maxAppointmentsPerDay} per day)`,
           );
           analysis.matchScore -= 30;
           console.log(
-            `  ❌ At max appointments: ${appointmentCount}/${maxAppointmentsPerDay}`
+            `   At max appointments: ${appointmentCount}/${maxAppointmentsPerDay}`,
           );
         }
 
@@ -261,11 +261,11 @@ exports.analyzeUnscheduledAppointment = async (req, res) => {
           ) {
             analysis.canAssign = false;
             analysis.rejectionReasons.push(
-              `Schedule conflict: Already has appointment at ${existing.startTime}-${existing.endTime}`
+              `Schedule conflict: Already has appointment at ${existing.startTime}-${existing.endTime}`,
             );
             analysis.matchScore -= 40;
             console.log(
-              `  ❌ Conflict at ${existing.startTime}-${existing.endTime}`
+              `   Conflict at ${existing.startTime}-${existing.endTime}`,
             );
             break;
           }
@@ -276,22 +276,20 @@ exports.analyzeUnscheduledAppointment = async (req, res) => {
             careReceiver._id.toString() !== existing.careReceiver.toString()
           ) {
             const timeBetweenStart = Math.abs(
-              parseTime(preferredTime) - parseTime(existing.endTime)
+              parseTime(preferredTime) - parseTime(existing.endTime),
             );
             const timeBetweenEnd = Math.abs(
-              parseTime(proposedEnd) - parseTime(existing.startTime)
+              parseTime(proposedEnd) - parseTime(existing.startTime),
             );
             const minTimeBetween = Math.min(timeBetweenStart, timeBetweenEnd);
 
             if (minTimeBetween < travelTimeBuffer && minTimeBetween > 0) {
               analysis.canAssign = false;
               analysis.rejectionReasons.push(
-                `Insufficient travel time: Only ${minTimeBetween} min between appointments (needs ${travelTimeBuffer} min)`
+                `Insufficient travel time: Only ${minTimeBetween} min between appointments (needs ${travelTimeBuffer} min)`,
               );
               analysis.matchScore -= 25;
-              console.log(
-                `  ❌ Insufficient travel time: ${minTimeBetween} min`
-              );
+              console.log(`   Insufficient travel time: ${minTimeBetween} min`);
               break;
             }
           }
@@ -301,11 +299,11 @@ exports.analyzeUnscheduledAppointment = async (req, res) => {
         analysis.matchScore = Math.max(0, Math.min(100, analysis.matchScore));
 
         console.log(
-          `  Final: ${analysis.canAssign ? "✓ Can assign" : "✗ Cannot assign"} (Score: ${analysis.matchScore}%)`
+          `  Final: ${analysis.canAssign ? "✓ Can assign" : "✗ Cannot assign"} (Score: ${analysis.matchScore}%)`,
         );
 
         return analysis;
-      })
+      }),
     );
 
     // Sort by match score (best matches first)
@@ -316,7 +314,7 @@ exports.analyzeUnscheduledAppointment = async (req, res) => {
     const cannotAssign = careGiverAnalysis.filter((cg) => !cg.canAssign);
 
     console.log(
-      `\nResults: ${canAssign.length} can assign, ${cannotAssign.length} cannot`
+      `\nResults: ${canAssign.length} can assign, ${cannotAssign.length} cannot`,
     );
     console.log("=========================================\n");
 
@@ -387,23 +385,23 @@ exports.getAssignmentReasoning = async (req, res) => {
 
     // Reason 1: Availability match
     reasons.push(
-      `✓ Available on ${moment(appointment.date).format("dddd")} at ${appointment.startTime}`
+      `✓ Available on ${moment(appointment.date).format("dddd")} at ${appointment.startTime}`,
     );
     score += 20;
 
     // Reason 2: Skills match
     if (appointment.requirements && appointment.requirements.length > 0) {
       const matchingSkills = appointment.requirements.filter((skill) =>
-        appointment.careGiver.skills.includes(skill)
+        appointment.careGiver.skills.includes(skill),
       );
       if (matchingSkills.length === appointment.requirements.length) {
         reasons.push(
-          `✓ Has all required skills: ${matchingSkills.map((s) => s.replace(/_/g, " ")).join(", ")}`
+          `✓ Has all required skills: ${matchingSkills.map((s) => s.replace(/_/g, " ")).join(", ")}`,
         );
         score += 25;
       } else {
         reasons.push(
-          `⚠ Has ${matchingSkills.length}/${appointment.requirements.length} required skills`
+          `⚠ Has ${matchingSkills.length}/${appointment.requirements.length} required skills`,
         );
         score += 10;
       }
@@ -429,7 +427,7 @@ exports.getAssignmentReasoning = async (req, res) => {
         appointment.careReceiver.genderPreference
       ) {
         reasons.push(
-          `✓ Matches gender preference: ${appointment.careReceiver.genderPreference}`
+          `✓ Matches gender preference: ${appointment.careReceiver.genderPreference}`,
         );
         score += 15;
       }
@@ -442,7 +440,7 @@ exports.getAssignmentReasoning = async (req, res) => {
     ) {
       const distance = calculateDistance(
         appointment.careGiver.coordinates.coordinates,
-        appointment.careReceiver.coordinates.coordinates
+        appointment.careReceiver.coordinates.coordinates,
       );
       reasons.push(`✓ Distance: ${distance.toFixed(1)} km (within range)`);
       score += Math.max(0, 10 - distance); // Closer = higher score

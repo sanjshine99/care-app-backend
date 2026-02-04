@@ -26,14 +26,14 @@ class ScheduleNotificationService {
     });
 
     console.log(
-      "✅ Schedule notification service started (runs on 25th at 9:00 AM)"
+      " Schedule notification service started (runs on 25th at 9:00 AM)",
     );
 
     // Also run immediately on startup if it's the 25th
     const today = moment();
     if (today.date() === 25) {
       console.log(
-        "[Schedule Notification] Today is the 25th - checking reminders..."
+        "[Schedule Notification] Today is the 25th - checking reminders...",
       );
       this.sendMonthlyReminder();
     }
@@ -45,7 +45,7 @@ class ScheduleNotificationService {
   stop() {
     if (this.cronJob) {
       this.cronJob.stop();
-      console.log("❌ Schedule notification service stopped");
+      console.log(" Schedule notification service stopped");
     }
   }
 
@@ -70,7 +70,7 @@ class ScheduleNotificationService {
       // Only send notification if few or no appointments exist
       if (existingAppointments < 10) {
         console.log(
-          `[Schedule Notification] No schedule found for ${nextMonthName} - sending reminder`
+          `[Schedule Notification] No schedule found for ${nextMonthName} - sending reminder`,
         );
 
         // Get all admin users
@@ -94,17 +94,17 @@ class ScheduleNotificationService {
         }
 
         console.log(
-          `✅ Sent schedule reminder for ${nextMonthName} to ${admins.length} admin(s)`
+          ` Sent schedule reminder for ${nextMonthName} to ${admins.length} admin(s)`,
         );
       } else {
         console.log(
-          `[Schedule Notification] Schedule for ${nextMonthName} already exists (${existingAppointments} appointments) - no reminder sent`
+          `[Schedule Notification] Schedule for ${nextMonthName} already exists (${existingAppointments} appointments) - no reminder sent`,
         );
       }
     } catch (error) {
       console.error(
         "[Schedule Notification] Error sending monthly reminder:",
-        error
+        error,
       );
     }
   }
@@ -149,7 +149,7 @@ class ScheduleNotificationService {
     } catch (error) {
       console.error(
         "[Schedule Notification] Error getting schedule status:",
-        error
+        error,
       );
       throw error;
     }

@@ -24,7 +24,7 @@ exports.generateSchedule = async (req, res, next) => {
   console.log("\n========================================");
   console.log("🟢 POST /schedule/generate CALLED");
   console.log("========================================");
-  console.log("⚠️  THIS IS THE ONLY ENDPOINT THAT GENERATES");
+  console.log("  THIS IS THE ONLY ENDPOINT THAT GENERATES");
   console.log("Request body:", JSON.stringify(req.body, null, 2));
   console.log("🔄 STARTING SCHEDULE GENERATION...");
 
@@ -78,13 +78,13 @@ exports.generateSchedule = async (req, res, next) => {
     const summary = {
       totalScheduled: results.reduce(
         (sum, r) => sum + (r.scheduled?.length || 0),
-        0
+        0,
       ),
       totalFailed: results.reduce((sum, r) => sum + (r.failed?.length || 0), 0),
       careReceiversProcessed: results.length,
     };
 
-    console.log("✅ GENERATION COMPLETE");
+    console.log(" GENERATION COMPLETE");
     console.log(`   Scheduled: ${summary.totalScheduled}`);
     console.log(`   Failed: ${summary.totalFailed}`);
     console.log("========================================\n");
@@ -102,7 +102,7 @@ exports.generateSchedule = async (req, res, next) => {
       message: `Scheduled ${summary.totalScheduled} appointments, ${summary.totalFailed} failed`,
     });
   } catch (error) {
-    console.error("❌ Error in generateSchedule:", error);
+    console.error(" Error in generateSchedule:", error);
     console.log("========================================\n");
     next(error);
   }
@@ -120,7 +120,7 @@ exports.getAllAppointments = async (req, res, next) => {
   console.log("🔵 GET /schedule/appointments CALLED");
   console.log("========================================");
   console.log("Query params:", req.query);
-  console.log("⚠️  THIS ENDPOINT ONLY FETCHES - NO GENERATION");
+  console.log("  THIS ENDPOINT ONLY FETCHES - NO GENERATION");
 
   try {
     const {
@@ -169,9 +169,9 @@ exports.getAllAppointments = async (req, res, next) => {
       .skip((page - 1) * limit);
 
     console.log(
-      `✅ Fetched ${appointments.length} appointments (total: ${total})`
+      ` Fetched ${appointments.length} appointments (total: ${total})`,
     );
-    console.log("✅ NO GENERATION OCCURRED");
+    console.log(" NO GENERATION OCCURRED");
     console.log("========================================\n");
 
     res.json({
@@ -186,7 +186,7 @@ exports.getAllAppointments = async (req, res, next) => {
       },
     });
   } catch (error) {
-    console.error("❌ Error in getAllAppointments:", error.message);
+    console.error(" Error in getAllAppointments:", error.message);
     console.log("========================================\n");
     next(error);
   }
@@ -200,7 +200,7 @@ exports.getUnscheduled = async (req, res, next) => {
   console.log("🔵 GET /schedule/unscheduled CALLED");
   console.log("========================================");
   console.log("Query params:", req.query);
-  console.log("⚠️  THIS ENDPOINT ONLY CALCULATES - NO GENERATION");
+  console.log("  THIS ENDPOINT ONLY CALCULATES - NO GENERATION");
 
   try {
     const { startDate, endDate } = req.query;
@@ -259,11 +259,11 @@ exports.getUnscheduled = async (req, res, next) => {
         const dateStr = date.toISOString().split("T")[0];
 
         for (const visit of cr.dailyVisits) {
-          // ✅ FIXED: Check if this date matches the visit's schedule
+          //  FIXED: Check if this date matches the visit's schedule
           const shouldHaveAppointment = isDateInSchedule(
             date,
             visit,
-            cr.createdAt
+            cr.createdAt,
           );
 
           if (shouldHaveAppointment) {
@@ -303,7 +303,7 @@ exports.getUnscheduled = async (req, res, next) => {
             address: cr.address,
             coordinates: cr.coordinates,
           },
-          expected: expectedCount, // ✅ FIXED: Use calculated count, not dates.length * visits.length
+          expected: expectedCount, //  FIXED: Use calculated count, not dates.length * visits.length
           actual: existingAppointments.length,
           missing: details.length,
           details: details,
@@ -312,9 +312,9 @@ exports.getUnscheduled = async (req, res, next) => {
     }
 
     console.log(
-      `✅ Calculated ${unscheduled.length} care receivers with unscheduled appointments`
+      ` Calculated ${unscheduled.length} care receivers with unscheduled appointments`,
     );
-    console.log("✅ NO GENERATION OCCURRED");
+    console.log(" NO GENERATION OCCURRED");
     console.log("========================================\n");
 
     res.json({
@@ -325,7 +325,7 @@ exports.getUnscheduled = async (req, res, next) => {
       },
     });
   } catch (error) {
-    console.error("❌ Error in getUnscheduled:", error.message);
+    console.error(" Error in getUnscheduled:", error.message);
     console.log("========================================\n");
     next(error);
   }
@@ -335,7 +335,7 @@ exports.getUnscheduled = async (req, res, next) => {
 // @route   POST /api/schedule/analyze-unscheduled
 // @access  Private
 exports.analyzeUnscheduled = async (req, res, next) => {
-  console.log("\n🔍 POST /schedule/analyze-unscheduled CALLED");
+  console.log("\n POST /schedule/analyze-unscheduled CALLED");
 
   try {
     const { careReceiver: careReceiverId, visit, date } = req.body;
@@ -389,20 +389,20 @@ exports.analyzeUnscheduled = async (req, res, next) => {
 
       // Check skills
       const normalizedCgSkills = cg.skills.map((s) =>
-        s.toLowerCase().replace(/ /g, "_")
+        s.toLowerCase().replace(/ /g, "_"),
       );
       const normalizedRequired = (visit.requirements || []).map((r) =>
-        r.toLowerCase().replace(/ /g, "_")
+        r.toLowerCase().replace(/ /g, "_"),
       );
 
       const missingSkills = normalizedRequired.filter(
-        (req) => !normalizedCgSkills.includes(req)
+        (req) => !normalizedCgSkills.includes(req),
       );
 
       if (missingSkills.length > 0) {
         analysis.canAssign = false;
         analysis.rejectionReasons.push(
-          `Missing required skills: ${missingSkills.map((s) => s.replace(/_/g, " ")).join(", ")}`
+          `Missing required skills: ${missingSkills.map((s) => s.replace(/_/g, " ")).join(", ")}`,
         );
         analysis.matchScore -= 30;
       }
@@ -414,7 +414,7 @@ exports.analyzeUnscheduled = async (req, res, next) => {
         cg.gender.toLowerCase() !== careReceiver.genderPreference.toLowerCase()
       ) {
         analysis.rejectionReasons.push(
-          `Gender mismatch (preference: ${careReceiver.genderPreference}, care giver: ${cg.gender})`
+          `Gender mismatch (preference: ${careReceiver.genderPreference}, care giver: ${cg.gender})`,
         );
         analysis.matchScore -= 10;
       }
@@ -426,7 +426,7 @@ exports.analyzeUnscheduled = async (req, res, next) => {
         appointmentDate,
         visit.preferredTime,
         endTime,
-        careReceiver
+        careReceiver,
       );
 
       if (!availabilityCheck.available) {
@@ -451,9 +451,9 @@ exports.analyzeUnscheduled = async (req, res, next) => {
       return b.matchScore - a.matchScore;
     });
 
-    console.log(`✅ Analyzed ${careGiverAnalysis.length} care givers`);
+    console.log(` Analyzed ${careGiverAnalysis.length} care givers`);
     console.log(
-      `   Can assign: ${careGiverAnalysis.filter((a) => a.canAssign).length}`
+      `   Can assign: ${careGiverAnalysis.filter((a) => a.canAssign).length}`,
     );
 
     res.json({
@@ -475,7 +475,7 @@ exports.analyzeUnscheduled = async (req, res, next) => {
       },
     });
   } catch (error) {
-    console.error("❌ Error in analyzeUnscheduled:", error);
+    console.error(" Error in analyzeUnscheduled:", error);
     next(error);
   }
 };
@@ -486,7 +486,7 @@ async function checkCareGiverAvailabilityFresh(
   date,
   startTime,
   endTime,
-  careReceiver
+  careReceiver,
 ) {
   const careGiver = await CareGiver.findById(careGiverId).lean();
 
@@ -515,7 +515,7 @@ async function checkCareGiverAvailabilityFresh(
 
   if (isOnTimeOff) {
     console.log(
-      `  ❌ ${careGiver.name} is on time off on ${date.toISOString().split("T")[0]}`
+      `   ${careGiver.name} is on time off on ${date.toISOString().split("T")[0]}`,
     );
     return { available: false, reason: "On time off" };
   }
@@ -544,7 +544,7 @@ async function checkCareGiverAvailabilityFresh(
 
   const dayOfWeek = date.toLocaleDateString("en-GB", { weekday: "long" });
   const daySchedule = availability.schedule.find(
-    (s) => s.dayOfWeek === dayOfWeek
+    (s) => s.dayOfWeek === dayOfWeek,
   );
 
   if (!daySchedule || daySchedule.slots.length === 0) {
@@ -587,7 +587,7 @@ async function checkCareGiverAvailabilityFresh(
   ) {
     distance = calculateDistance(
       careGiver.coordinates.coordinates,
-      careReceiver.coordinates.coordinates
+      careReceiver.coordinates.coordinates,
     );
   }
 
@@ -685,7 +685,7 @@ exports.getFreshCareReceiverData = async (req, res, next) => {
     console.log("Gender preference:", careReceiver.genderPreference || "None");
     console.log(
       "Coordinates:",
-      careReceiver.coordinates?.coordinates || "None"
+      careReceiver.coordinates?.coordinates || "None",
     );
     console.log("===================================\n");
 
@@ -749,12 +749,12 @@ exports.findAvailableForManual = async (req, res, next) => {
     console.log("Care Receiver:", careReceiver.name);
     console.log(
       "  Gender Preference:",
-      careReceiver.genderPreference || "None"
+      careReceiver.genderPreference || "None",
     );
     console.log("  Address:", careReceiver.address?.full || "No address");
     console.log(
       "  Coordinates:",
-      careReceiver.coordinates?.coordinates || "No coordinates"
+      careReceiver.coordinates?.coordinates || "No coordinates",
     );
 
     const appointmentDate = new Date(date);
@@ -772,7 +772,7 @@ exports.findAvailableForManual = async (req, res, next) => {
       console.log(`  Can Drive: ${cg.canDrive}`);
       console.log(`  Address: ${cg.address?.city || "Unknown"}`);
       console.log(
-        `  Working Days: ${cg.availability?.length || 0} days configured`
+        `  Working Days: ${cg.availability?.length || 0} days configured`,
       );
     });
 
@@ -786,26 +786,26 @@ exports.findAvailableForManual = async (req, res, next) => {
       potentialCareGivers = allCareGivers.filter((cg) => {
         // Normalize both requirement and skill names
         const normalizedSkills = cg.skills.map((s) =>
-          s.toLowerCase().replace(/ /g, "_")
+          s.toLowerCase().replace(/ /g, "_"),
         );
         const normalizedRequirements = requirements.map((r) =>
-          r.toLowerCase().replace(/ /g, "_")
+          r.toLowerCase().replace(/ /g, "_"),
         );
 
         const hasAllSkills = normalizedRequirements.every((req) =>
-          normalizedSkills.includes(req)
+          normalizedSkills.includes(req),
         );
 
         console.log(`\n  ${cg.name}:`);
         console.log(`    Has: [${normalizedSkills.join(", ")}]`);
         console.log(`    Needs: [${normalizedRequirements.join(", ")}]`);
-        console.log(`    Match: ${hasAllSkills ? "✅ YES" : "❌ NO"}`);
+        console.log(`    Match: ${hasAllSkills ? " YES" : " NO"}`);
 
         return hasAllSkills;
       });
 
       console.log(
-        `\nAfter skill filtering: ${potentialCareGivers.length} care givers qualify`
+        `\nAfter skill filtering: ${potentialCareGivers.length} care givers qualify`,
       );
     } else {
       console.log("No skill requirements - all care givers qualify");
@@ -823,20 +823,20 @@ exports.findAvailableForManual = async (req, res, next) => {
         appointmentDate,
         startTime,
         endTime,
-        careReceiver
+        careReceiver,
       );
 
       console.log(
-        `    Available: ${availabilityCheck.available ? "✅ YES" : "❌ NO"}`
+        `    Available: ${availabilityCheck.available ? " YES" : " NO"}`,
       );
       if (!availabilityCheck.available) {
         console.log(`    Reason: ${availabilityCheck.reason}`);
       } else {
         console.log(
-          `    Distance: ${availabilityCheck.distance?.toFixed(2)} km`
+          `    Distance: ${availabilityCheck.distance?.toFixed(2)} km`,
         );
         console.log(
-          `    Travel Time: ~${availabilityCheck.travelTime} minutes`
+          `    Travel Time: ~${availabilityCheck.travelTime} minutes`,
         );
       }
 
@@ -873,7 +873,7 @@ exports.findAvailableForManual = async (req, res, next) => {
       },
     });
   } catch (error) {
-    console.error("❌ Error finding available care givers:", error);
+    console.error(" Error finding available care givers:", error);
     next(error);
   }
 };
@@ -884,7 +884,7 @@ async function checkCareGiverAvailabilityForManual(
   date,
   startTime,
   endTime,
-  careReceiver
+  careReceiver,
 ) {
   console.log(`    Checking availability...`);
 
@@ -916,7 +916,7 @@ async function checkCareGiverAvailabilityForManual(
 
   if (isOnTimeOff) {
     console.log(
-      `  ❌ ${careGiver.name} is on time off on ${date.toISOString().split("T")[0]}`
+      `   ${careGiver.name} is on time off on ${date.toISOString().split("T")[0]}`,
     );
     return { available: false, reason: "On time off" };
   }
@@ -949,7 +949,7 @@ async function checkCareGiverAvailabilityForManual(
   // Check working hours
   const dayOfWeek = date.toLocaleDateString("en-GB", { weekday: "long" });
   const daySchedule = availability.schedule.find(
-    (s) => s.dayOfWeek === dayOfWeek
+    (s) => s.dayOfWeek === dayOfWeek,
   );
 
   if (!daySchedule || daySchedule.slots.length === 0) {
@@ -962,7 +962,7 @@ async function checkCareGiverAvailabilityForManual(
 
   if (!isInWorkingHours) {
     console.log(
-      `    Working hours: ${daySchedule.slots.map((s) => `${s.startTime}-${s.endTime}`).join(", ")}`
+      `    Working hours: ${daySchedule.slots.map((s) => `${s.startTime}-${s.endTime}`).join(", ")}`,
     );
     console.log(`    Requested: ${startTime}-${endTime}`);
     return { available: false, reason: "Outside working hours" };
@@ -1000,7 +1000,7 @@ async function checkCareGiverAvailabilityForManual(
   ) {
     distance = calculateDistance(
       careGiver.coordinates.coordinates,
-      careReceiver.coordinates.coordinates
+      careReceiver.coordinates.coordinates,
     );
     travelTime = Math.ceil((distance / 40) * 60); // Assume 40 km/h average
 
@@ -1214,12 +1214,12 @@ exports.deleteAppointment = async (req, res, next) => {
 // Helper to find why scheduling failed (ANALYSIS ONLY - NO CREATION)
 async function findSchedulingFailureReason(careReceiver, visit, date) {
   try {
-    // ✅ FIXED: Don't pass time parameters - findBestCareGiver calculates them from visit
+    //  FIXED: Don't pass time parameters - findBestCareGiver calculates them from visit
     // The 4th parameter is excludeCareGiverId, not startTime!
     const bestCareGiver = await findBestCareGiver(
       careReceiver,
       visit,
-      date
+      date,
       // Don't pass excludeCareGiverId unless we actually want to exclude a care giver
     );
 
@@ -1244,7 +1244,7 @@ function calculateDuration(startTime, endTime) {
 // @route   POST /api/schedule/validate
 // @access  Private
 exports.validateSchedule = async (req, res, next) => {
-  console.log("\n🔍 POST /schedule/validate CALLED");
+  console.log("\n POST /schedule/validate CALLED");
   console.log("Validating all scheduled appointments...");
 
   try {
@@ -1273,11 +1273,11 @@ exports.validateSchedule = async (req, res, next) => {
       .populate("careReceiver", "name dailyVisits genderPreference coordinates")
       .populate(
         "careGiver",
-        "name email availability timeOff coordinates isActive"
+        "name email availability timeOff coordinates isActive",
       )
       .populate(
         "secondaryCareGiver",
-        "name email availability timeOff coordinates isActive"
+        "name email availability timeOff coordinates isActive",
       );
 
     console.log(`Found ${appointments.length} appointments to validate`);
@@ -1312,7 +1312,7 @@ exports.validateSchedule = async (req, res, next) => {
         const utcAppointmentDate = Date.UTC(
           appointmentDate.getUTCFullYear(),
           appointmentDate.getUTCMonth(),
-          appointmentDate.getUTCDate()
+          appointmentDate.getUTCDate(),
         );
 
         for (const timeOff of apt.careGiver.timeOff) {
@@ -1321,7 +1321,7 @@ exports.validateSchedule = async (req, res, next) => {
           const utcStart = Date.UTC(
             timeOffStartDate.getUTCFullYear(),
             timeOffStartDate.getUTCMonth(),
-            timeOffStartDate.getUTCDate()
+            timeOffStartDate.getUTCDate(),
           );
 
           const timeOffEndDate = new Date(timeOff.endDate);
@@ -1332,7 +1332,7 @@ exports.validateSchedule = async (req, res, next) => {
             23,
             59,
             59,
-            999
+            999,
           );
 
           // Check if appointment date falls within time off period (UTC comparison)
@@ -1340,7 +1340,7 @@ exports.validateSchedule = async (req, res, next) => {
             const reason = timeOff.reason || "Personal";
             issues.push(`Care giver is now on time off (${reason})`);
             console.log(
-              `  ❌ Appointment on ${new Date(utcAppointmentDate).toISOString().split("T")[0]} - Care giver on time off`
+              `   Appointment on ${new Date(utcAppointmentDate).toISOString().split("T")[0]} - Care giver on time off`,
             );
             break;
           }
@@ -1360,7 +1360,7 @@ exports.validateSchedule = async (req, res, next) => {
           const utcAppointmentDate = Date.UTC(
             appointmentDate.getUTCFullYear(),
             appointmentDate.getUTCMonth(),
-            appointmentDate.getUTCDate()
+            appointmentDate.getUTCDate(),
           );
 
           for (const timeOff of apt.secondaryCareGiver.timeOff) {
@@ -1369,7 +1369,7 @@ exports.validateSchedule = async (req, res, next) => {
             const utcStart = Date.UTC(
               timeOffStartDate.getUTCFullYear(),
               timeOffStartDate.getUTCMonth(),
-              timeOffStartDate.getUTCDate()
+              timeOffStartDate.getUTCDate(),
             );
 
             const timeOffEndDate = new Date(timeOff.endDate);
@@ -1380,7 +1380,7 @@ exports.validateSchedule = async (req, res, next) => {
               23,
               59,
               59,
-              999
+              999,
             );
 
             // UTC comparison
@@ -1390,7 +1390,7 @@ exports.validateSchedule = async (req, res, next) => {
             ) {
               const reason = timeOff.reason || "Personal";
               issues.push(
-                `Secondary care giver is now on time off (${reason})`
+                `Secondary care giver is now on time off (${reason})`,
               );
               break;
             }
@@ -1398,7 +1398,7 @@ exports.validateSchedule = async (req, res, next) => {
         }
       } else if (apt.doubleHanded && !apt.secondaryCareGiver) {
         issues.push(
-          "Double-handed care required but no secondary care giver assigned"
+          "Double-handed care required but no secondary care giver assigned",
         );
       }
 
@@ -1432,7 +1432,7 @@ exports.validateSchedule = async (req, res, next) => {
 
         updatedCount++;
         console.log(
-          `  ❌ CONFLICT: ${apt.careReceiver?.name} on ${apt.date.toISOString().split("T")[0]} - ${issues.join("; ")}`
+          `   CONFLICT: ${apt.careReceiver?.name} on ${apt.date.toISOString().split("T")[0]} - ${issues.join("; ")}`,
         );
       } else {
         // Still valid - ensure status is scheduled
@@ -1443,7 +1443,7 @@ exports.validateSchedule = async (req, res, next) => {
           await apt.save();
           updatedCount++;
           console.log(
-            `  ✅ RESOLVED: ${apt.careReceiver?.name} on ${apt.date.toISOString().split("T")[0]} - back to scheduled`
+            `   RESOLVED: ${apt.careReceiver?.name} on ${apt.date.toISOString().split("T")[0]} - back to scheduled`,
           );
         }
 
@@ -1457,7 +1457,7 @@ exports.validateSchedule = async (req, res, next) => {
       }
     }
 
-    console.log(`\n✅ Validation complete:`);
+    console.log(`\n Validation complete:`);
     console.log(`   Valid: ${validAppointments.length}`);
     console.log(`   Invalid: ${invalidAppointments.length}`);
     console.log(`   Updated: ${updatedCount}\n`);
@@ -1480,7 +1480,7 @@ exports.validateSchedule = async (req, res, next) => {
           : `All appointments are valid`,
     });
   } catch (error) {
-    console.error("❌ Error in validateSchedule:", error);
+    console.error(" Error in validateSchedule:", error);
     next(error);
   }
 };

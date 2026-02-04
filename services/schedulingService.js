@@ -92,7 +92,7 @@ function isDateInSchedule(checkDate, visit, careReceiverCreatedAt) {
   // Check if visit has daysOfWeek defined
   if (!visit.daysOfWeek || visit.daysOfWeek.length === 0) {
     console.log(
-      `⚠️  Warning: No daysOfWeek defined for visit ${visit.visitNumber}, defaulting to all days`
+      `  Warning: No daysOfWeek defined for visit ${visit.visitNumber}, defaulting to all days`,
     );
     // If no daysOfWeek specified, default to all 7 days
     visit.daysOfWeek = dayNames;
@@ -128,13 +128,13 @@ function isDateInSchedule(checkDate, visit, careReceiverCreatedAt) {
     const startUTC = Date.UTC(
       startDate.getUTCFullYear(),
       startDate.getUTCMonth(),
-      startDate.getUTCDate()
+      startDate.getUTCDate(),
     );
 
     const checkUTC = Date.UTC(
       checkDate.getUTCFullYear(),
       checkDate.getUTCMonth(),
-      checkDate.getUTCDate()
+      checkDate.getUTCDate(),
     );
 
     // Calculate difference in days
@@ -177,7 +177,7 @@ async function isCareGiverAvailable(
   startTime,
   endTime,
   careReceiverLocation,
-  excludeAppointmentId = null
+  excludeAppointmentId = null,
 ) {
   const result = {
     available: false,
@@ -203,7 +203,7 @@ async function isCareGiverAvailable(
     const utcCheckDate = Date.UTC(
       checkDate.getUTCFullYear(),
       checkDate.getUTCMonth(),
-      checkDate.getUTCDate()
+      checkDate.getUTCDate(),
     );
 
     for (const timeOff of careGiver.timeOff) {
@@ -211,7 +211,7 @@ async function isCareGiverAvailable(
       const utcStart = Date.UTC(
         timeOffStartDate.getUTCFullYear(),
         timeOffStartDate.getUTCMonth(),
-        timeOffStartDate.getUTCDate()
+        timeOffStartDate.getUTCDate(),
       );
 
       const timeOffEndDate = new Date(timeOff.endDate);
@@ -222,7 +222,7 @@ async function isCareGiverAvailable(
         23,
         59,
         59,
-        999
+        999,
       );
 
       const isInRange = utcCheckDate >= utcStart && utcCheckDate <= utcEnd;
@@ -237,7 +237,7 @@ async function isCareGiverAvailable(
   // Get availability
   let availability = await Availability.getCurrentForCareGiver(
     careGiverId,
-    date
+    date,
   );
 
   if (
@@ -260,7 +260,7 @@ async function isCareGiverAvailable(
       const dayOfWeek = dayNames[utcDay];
 
       const daySchedule = careGiver.availability.find(
-        (a) => a.dayOfWeek === dayOfWeek
+        (a) => a.dayOfWeek === dayOfWeek,
       );
 
       if (!daySchedule || daySchedule.slots.length === 0) {
@@ -269,7 +269,7 @@ async function isCareGiverAvailable(
       }
 
       const isInWorkingHours = daySchedule.slots.some(
-        (slot) => startTime >= slot.startTime && endTime <= slot.endTime
+        (slot) => startTime >= slot.startTime && endTime <= slot.endTime,
       );
 
       if (!isInWorkingHours) {
@@ -295,7 +295,7 @@ async function isCareGiverAvailable(
     const dayOfWeek = dayNames[utcDay];
 
     const daySchedule = availability.schedule.find(
-      (s) => s.dayOfWeek === dayOfWeek
+      (s) => s.dayOfWeek === dayOfWeek,
     );
 
     if (!daySchedule || daySchedule.slots.length === 0) {
@@ -304,7 +304,7 @@ async function isCareGiverAvailable(
     }
 
     const isInWorkingHours = daySchedule.slots.some(
-      (slot) => startTime >= slot.startTime && endTime <= slot.endTime
+      (slot) => startTime >= slot.startTime && endTime <= slot.endTime,
     );
 
     if (!isInWorkingHours) {
@@ -353,10 +353,10 @@ async function isCareGiverAvailable(
 
   // Check travel time conflicts
   const appointmentsBefore = existingAppointments.filter(
-    (apt) => apt.endTime <= startTime
+    (apt) => apt.endTime <= startTime,
   );
   const appointmentsAfter = existingAppointments.filter(
-    (apt) => apt.startTime >= endTime
+    (apt) => apt.startTime >= endTime,
   );
 
   if (appointmentsBefore.length > 0) {
@@ -364,7 +364,7 @@ async function isCareGiverAvailable(
     if (lastAppointment.careReceiver?.coordinates) {
       const travelTime = await calculateTravelTime(
         lastAppointment.careReceiver.coordinates.coordinates,
-        careReceiverLocation
+        careReceiverLocation,
       );
 
       const [lastHours, lastMinutes] = lastAppointment.endTime
@@ -394,7 +394,7 @@ async function isCareGiverAvailable(
     if (nextAppointment.careReceiver?.coordinates) {
       const travelTime = await calculateTravelTime(
         careReceiverLocation,
-        nextAppointment.careReceiver.coordinates.coordinates
+        nextAppointment.careReceiver.coordinates.coordinates,
       );
 
       const [newHours, newMinutes] = endTime.split(":").map(Number);
@@ -431,10 +431,10 @@ async function findBestCareGiver(
   careReceiver,
   visit,
   date,
-  excludeCareGiverId = null
+  excludeCareGiverId = null,
 ) {
   console.log(
-    `\n[Find Best] Looking for care giver for Visit ${visit.visitNumber}`
+    `\n[Find Best] Looking for care giver for Visit ${visit.visitNumber}`,
   );
   console.log(`[Find Best] Requirements: ${visit.requirements.join(", ")}`);
 
@@ -475,7 +475,7 @@ async function findBestCareGiver(
 
   const potentialCareGivers = await CareGiver.find(query).limit(50);
   console.log(
-    `[Find Best] Found ${potentialCareGivers.length} potential care givers`
+    `[Find Best] Found ${potentialCareGivers.length} potential care givers`,
   );
 
   if (potentialCareGivers.length === 0) {
@@ -497,13 +497,13 @@ async function findBestCareGiver(
       date,
       visit.preferredTime,
       endTime,
-      careReceiver.coordinates.coordinates
+      careReceiver.coordinates.coordinates,
     );
 
     if (availabilityCheck.available) {
       const distance = calculateDistance(
         careReceiver.coordinates.coordinates,
-        cg.coordinates.coordinates
+        cg.coordinates.coordinates,
       );
 
       let score = distance;
@@ -526,7 +526,7 @@ async function findBestCareGiver(
   }
 
   scoredCareGivers.sort((a, b) => a.score - b.score);
-  console.log(`[Find Best] ✅ Selected: ${scoredCareGivers[0].careGiver.name}`);
+  console.log(`[Find Best]  Selected: ${scoredCareGivers[0].careGiver.name}`);
   return { careGiver: scoredCareGivers[0].careGiver, reason: null };
 }
 
@@ -537,10 +537,10 @@ async function findSecondaryCareGiver(
   careReceiver,
   visit,
   date,
-  primaryCareGiverId
+  primaryCareGiverId,
 ) {
   console.log(
-    `\n[Find Secondary] Looking for SECOND care giver (double-handed)`
+    `\n[Find Secondary] Looking for SECOND care giver (double-handed)`,
   );
   console.log(`[Find Secondary] Primary CG: ${primaryCareGiverId}`);
 
@@ -548,15 +548,13 @@ async function findSecondaryCareGiver(
     careReceiver,
     visit,
     date,
-    primaryCareGiverId
+    primaryCareGiverId,
   );
 
   if (result.careGiver) {
-    console.log(
-      `[Find Secondary] ✅ Found secondary: ${result.careGiver.name}`
-    );
+    console.log(`[Find Secondary]  Found secondary: ${result.careGiver.name}`);
   } else {
-    console.log(`[Find Secondary] ❌ No secondary care giver available`);
+    console.log(`[Find Secondary]  No secondary care giver available`);
   }
 
   return result;
@@ -604,7 +602,7 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
   console.log(`\n========================================`);
   console.log(`SCHEDULING: ${careReceiver.name}`);
   console.log(
-    `Period: ${startDate.toISOString().split("T")[0]} to ${endDate.toISOString().split("T")[0]}`
+    `Period: ${startDate.toISOString().split("T")[0]} to ${endDate.toISOString().split("T")[0]}`,
   );
   console.log(`========================================\n`);
 
@@ -627,13 +625,13 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
           ? visit.daysOfWeek.join("/")
           : "all days";
         console.log(
-          `[Schedule] ⏭️  Skipping ${dayName} - Visit ${visit.visitNumber} not scheduled (schedule: ${visitDays})`
+          `[Schedule] ⏭️  Skipping ${dayName} - Visit ${visit.visitNumber} not scheduled (schedule: ${visitDays})`,
         );
         continue;
       }
 
       console.log(
-        `\n[Schedule] ✓ Processing Visit ${visit.visitNumber} (${visit.preferredTime}) - matches schedule`
+        `\n[Schedule] ✓ Processing Visit ${visit.visitNumber} (${visit.preferredTime}) - matches schedule`,
       );
 
       // Check if double-handed care required
@@ -645,11 +643,11 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
       const primaryCGResult = await findBestCareGiver(
         careReceiver,
         visit,
-        currentDate
+        currentDate,
       );
 
       if (!primaryCGResult.careGiver) {
-        console.log(`[Schedule] ❌ Failed: ${primaryCGResult.reason}`);
+        console.log(`[Schedule]  Failed: ${primaryCGResult.reason}`);
         failed.push({
           visit,
           date: dateStr,
@@ -666,12 +664,12 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
           careReceiver,
           visit,
           currentDate,
-          primaryCGResult.careGiver._id
+          primaryCGResult.careGiver._id,
         );
 
         if (!secondaryCGResult.careGiver) {
           console.log(
-            `[Schedule] ❌ Failed: ${secondaryCGResult.reason} (secondary CG not found)`
+            `[Schedule]  Failed: ${secondaryCGResult.reason} (secondary CG not found)`,
           );
           failed.push({
             visit,
@@ -683,7 +681,7 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
 
         secondaryCareGiver = secondaryCGResult.careGiver;
         console.log(
-          `[Schedule] 🤝 Double-handed: ${primaryCGResult.careGiver.name} + ${secondaryCareGiver.name}`
+          `[Schedule] 🤝 Double-handed: ${primaryCGResult.careGiver.name} + ${secondaryCareGiver.name}`,
         );
       }
 
@@ -698,12 +696,12 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
         Date.UTC(
           appointmentDate.getUTCFullYear(),
           appointmentDate.getUTCMonth(),
-          appointmentDate.getUTCDate()
-        )
+          appointmentDate.getUTCDate(),
+        ),
       );
 
       try {
-        // ✅ FIXED: Check for duplicate appointments before creating
+        //  FIXED: Check for duplicate appointments before creating
         const existingAppointment = await Appointment.findOne({
           careReceiver: careReceiver._id,
           date: utcAppointmentDate,
@@ -713,7 +711,7 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
 
         if (existingAppointment) {
           console.log(
-            `⏭️  Skipping ${dayName} Visit ${visit.visitNumber} - appointment already exists`
+            `⏭️  Skipping ${dayName} Visit ${visit.visitNumber} - appointment already exists`,
           );
           continue;
         }
@@ -749,13 +747,13 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
 
         if (secondaryCareGiver) {
           console.log(
-            `✅ Scheduled (DOUBLE-HANDED) with ${primaryCGResult.careGiver.name} + ${secondaryCareGiver.name}`
+            ` Scheduled (DOUBLE-HANDED) with ${primaryCGResult.careGiver.name} + ${secondaryCareGiver.name}`,
           );
         } else {
-          console.log(`✅ Scheduled with ${primaryCGResult.careGiver.name}`);
+          console.log(` Scheduled with ${primaryCGResult.careGiver.name}`);
         }
       } catch (error) {
-        console.error(`❌ Failed to create appointment: ${error.message}`);
+        console.error(` Failed to create appointment: ${error.message}`);
         failed.push({
           visit,
           date: dateStr,

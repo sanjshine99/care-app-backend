@@ -590,24 +590,24 @@ async function seedDatabase() {
     // Connect to MongoDB
     console.log("📡 Connecting to MongoDB...");
     await mongoose.connect(
-      process.env.MONGODB_URI || "mongodb://localhost:27017/care_system_db"
+      process.env.MONGODB_URI || "mongodb://localhost:27017/care_system_db",
     );
-    console.log("✅ Connected to MongoDB\n");
+    console.log(" Connected to MongoDB\n");
 
     // Clear existing data
     console.log("🗑️  Clearing existing data...");
     await CareGiver.deleteMany({});
     await CareReceiver.deleteMany({});
     await Availability.deleteMany({});
-    console.log("✅ Existing data cleared\n");
+    console.log(" Existing data cleared\n");
 
     // Insert Care Givers
     console.log("👥 Creating care givers...");
     const createdCareGivers = await CareGiver.insertMany(careGivers);
-    console.log(`✅ Created ${createdCareGivers.length} care givers\n`);
+    console.log(` Created ${createdCareGivers.length} care givers\n`);
 
     // Create Availability records
-    console.log("📅 Creating availability records...");
+    console.log(" Creating availability records...");
     for (const cg of createdCareGivers) {
       await Availability.create({
         careGiver: cg._id,
@@ -620,17 +620,15 @@ async function seedDatabase() {
         version: 1,
       });
     }
-    console.log(
-      `✅ Created ${createdCareGivers.length} availability records\n`
-    );
+    console.log(` Created ${createdCareGivers.length} availability records\n`);
 
     // Set preferred care givers
     const sarahWilliams = createdCareGivers.find(
-      (cg) => cg.name === "Sarah Williams"
+      (cg) => cg.name === "Sarah Williams",
     );
     if (sarahWilliams) {
       const margaret = careReceivers.find(
-        (cr) => cr.name === "Margaret Wilson"
+        (cr) => cr.name === "Margaret Wilson",
       );
       if (margaret) margaret.preferredCareGiver = sarahWilliams._id;
 
@@ -641,18 +639,18 @@ async function seedDatabase() {
     // Insert Care Receivers
     console.log("🏥 Creating care receivers...");
     const createdCareReceivers = await CareReceiver.insertMany(careReceivers);
-    console.log(`✅ Created ${createdCareReceivers.length} care receivers\n`);
+    console.log(` Created ${createdCareReceivers.length} care receivers\n`);
 
     // Summary
     console.log("========================================");
-    console.log("✅ SEEDING COMPLETE!");
+    console.log(" SEEDING COMPLETE!");
     console.log("========================================");
     console.log(`Care Givers: ${createdCareGivers.length}`);
     console.log(`Care Receivers: ${createdCareReceivers.length}`);
     console.log("========================================\n");
 
     // Detailed scheduling patterns
-    console.log("📋 FLEXIBLE SCHEDULING PATTERNS:\n");
+    console.log(" FLEXIBLE SCHEDULING PATTERNS:\n");
 
     createdCareReceivers.forEach((cr) => {
       console.log(`${cr.name}:`);
@@ -700,7 +698,7 @@ async function seedDatabase() {
     console.log("      • Dorothy: Weekends only");
     console.log("      • George: Mon/Wed/Fri only\n");
   } catch (error) {
-    console.error("❌ Error seeding database:", error);
+    console.error(" Error seeding database:", error);
     process.exit(1);
   } finally {
     await mongoose.connection.close();

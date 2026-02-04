@@ -47,7 +47,7 @@ const corsOptions = {
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
-      console.warn(`⚠️  Blocked by CORS: ${origin}`);
+      console.warn(`  Blocked by CORS: ${origin}`);
       callback(new Error("Not allowed by CORS"));
     }
   },
@@ -73,7 +73,7 @@ connectDB();
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
-  })
+  }),
 );
 app.use(cors(corsOptions));
 app.use(express.json({ limit: "10mb" }));
@@ -187,13 +187,13 @@ server.listen(PORT, HOST, () => {
   console.log(`📍 Environment: ${process.env.NODE_ENV || "development"}`);
   console.log(`🌐 Port: ${PORT}`);
   console.log(
-    `🔗 API: http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}/api`
+    `🔗 API: http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}/api`,
   );
   console.log(
-    `💚 Health: http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}/health`
+    `💚 Health: http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}/health`,
   );
   console.log(
-    `🗄️  MongoDB: ${require("mongoose").connection.readyState === 1 ? "✓ Connected" : "⏳ Connecting..."}`
+    `🗄️  MongoDB: ${require("mongoose").connection.readyState === 1 ? "✓ Connected" : "⏳ Connecting..."}`,
   );
   console.log("=".repeat(50) + "\n");
 });
@@ -217,7 +217,7 @@ const gracefulShutdown = (signal) => {
   // Force close after 10 seconds
   setTimeout(() => {
     console.error(
-      "Could not close connections in time, forcefully shutting down"
+      "Could not close connections in time, forcefully shutting down",
     );
     process.exit(1);
   }, 10000);
@@ -229,13 +229,13 @@ process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
 // Handle unhandled promise rejections
 process.on("unhandledRejection", (err) => {
-  console.error("❌ Unhandled Rejection:", err);
+  console.error(" Unhandled Rejection:", err);
   gracefulShutdown("UNHANDLED_REJECTION");
 });
 
 // Handle uncaught exceptions
 process.on("uncaughtException", (err) => {
-  console.error("❌ Uncaught Exception:", err);
+  console.error(" Uncaught Exception:", err);
   gracefulShutdown("UNCAUGHT_EXCEPTION");
 });
 

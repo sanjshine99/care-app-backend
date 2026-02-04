@@ -30,7 +30,7 @@ function isDateInSchedule(checkDate, visit, careReceiverCreatedAt) {
   const dayOfWeek = dayNames[utcDay];
 
   if (!visit.daysOfWeek || visit.daysOfWeek.length === 0) {
-    console.log(`    ⚠️  No daysOfWeek defined, defaulting to all 7 days`);
+    console.log(`      No daysOfWeek defined, defaulting to all 7 days`);
     visit.daysOfWeek = dayNames;
   }
 
@@ -47,7 +47,7 @@ function isDateInSchedule(checkDate, visit, careReceiverCreatedAt) {
     visit.recurrencePattern === "monthly"
   ) {
     const startDate = new Date(
-      visit.recurrenceStartDate || careReceiverCreatedAt
+      visit.recurrenceStartDate || careReceiverCreatedAt,
     );
     startDate.setUTCHours(0, 0, 0, 0);
 
@@ -55,8 +55,8 @@ function isDateInSchedule(checkDate, visit, careReceiverCreatedAt) {
       Date.UTC(
         checkDate.getUTCFullYear(),
         checkDate.getUTCMonth(),
-        checkDate.getUTCDate()
-      )
+        checkDate.getUTCDate(),
+      ),
     );
 
     const daysDiff = Math.floor((checkUTC - startDate) / (24 * 60 * 60 * 1000));
@@ -72,13 +72,13 @@ function isDateInSchedule(checkDate, visit, careReceiverCreatedAt) {
 async function comprehensiveDiagnostic() {
   try {
     await mongoose.connect(MONGODB_URI);
-    console.log("✅ Connected to MongoDB\n");
+    console.log(" Connected to MongoDB\n");
 
     // Date range
     const startDate = new Date("2026-01-03T00:00:00Z");
     const endDate = new Date("2026-02-02T23:59:59Z");
 
-    console.log("📅 Date Range: Jan 3 - Feb 2, 2026\n");
+    console.log(" Date Range: Jan 3 - Feb 2, 2026\n");
     console.log("=".repeat(70));
 
     // Get Elizabeth and Dorothy
@@ -88,12 +88,12 @@ async function comprehensiveDiagnostic() {
       const cr = await CareReceiver.findOne({ name }).lean();
 
       if (!cr) {
-        console.log(`\n❌ ${name} not found in database!\n`);
+        console.log(`\n ${name} not found in database!\n`);
         continue;
       }
 
       console.log(`\n${"=".repeat(70)}`);
-      console.log(`👤 ${name}`);
+      console.log(` ${name}`);
       console.log(`${"=".repeat(70)}`);
 
       console.log(`\nID: ${cr._id}`);
@@ -101,12 +101,12 @@ async function comprehensiveDiagnostic() {
       console.log(`Created: ${cr.createdAt}`);
 
       // Check daily visits
-      console.log(`\n📋 DAILY VISITS CONFIGURATION:`);
+      console.log(`\n DAILY VISITS CONFIGURATION:`);
       console.log(`Total visits: ${cr.dailyVisits.length}`);
 
       if (cr.dailyVisits.length === 0) {
         console.log(
-          `❌ NO VISITS CONFIGURED! This is why they show 0 unscheduled.`
+          ` NO VISITS CONFIGURED! This is why they show 0 unscheduled.`,
         );
         continue;
       }
@@ -115,13 +115,13 @@ async function comprehensiveDiagnostic() {
         console.log(`\nVisit ${visit.visitNumber}:`);
         console.log(`  Time: ${visit.preferredTime} (${visit.duration} min)`);
         console.log(
-          `  Days of week: ${visit.daysOfWeek ? visit.daysOfWeek.join(", ") : "❌ NOT SET"}`
+          `  Days of week: ${visit.daysOfWeek ? visit.daysOfWeek.join(", ") : " NOT SET"}`,
         );
         console.log(`  Recurrence: ${visit.recurrencePattern}`);
         if (visit.recurrencePattern !== "weekly") {
           console.log(`  Interval: ${visit.recurrenceInterval}`);
           console.log(
-            `  Start date: ${visit.recurrenceStartDate || "Not set (uses createdAt)"}`
+            `  Start date: ${visit.recurrenceStartDate || "Not set (uses createdAt)"}`,
           );
         }
         console.log(`  Requirements: ${visit.requirements.join(", ")}`);
@@ -153,15 +153,15 @@ async function comprehensiveDiagnostic() {
         allAppointments.forEach((apt, idx) => {
           const dateStr = apt.date.toISOString().split("T")[0];
           console.log(
-            `  ${idx + 1}. ${dateStr} - Visit ${apt.visitNumber} at ${apt.startTime} - Status: ${apt.status}`
+            `  ${idx + 1}. ${dateStr} - Visit ${apt.visitNumber} at ${apt.startTime} - Status: ${apt.status}`,
           );
         });
       } else {
-        console.log("  ❌ No appointments found in this range!");
+        console.log("   No appointments found in this range!");
       }
 
       // Calculate expected appointments using isDateInSchedule
-      console.log(`\n🔍 EXPECTED APPOINTMENTS CALCULATION:`);
+      console.log(`\n EXPECTED APPOINTMENTS CALCULATION:`);
 
       const expectedDates = [];
       const currentDate = new Date(startDate);
@@ -194,7 +194,7 @@ async function comprehensiveDiagnostic() {
         console.log(`\nFirst 5 expected dates:`);
         expectedDates.slice(0, 5).forEach((exp, idx) => {
           console.log(
-            `  ${idx + 1}. ${exp.date} (${exp.dayName}) - Visit ${exp.visitNumber} at ${exp.time}`
+            `  ${idx + 1}. ${exp.date} (${exp.dayName}) - Visit ${exp.visitNumber} at ${exp.time}`,
           );
         });
 
@@ -204,12 +204,12 @@ async function comprehensiveDiagnostic() {
       }
 
       // Find which are missing
-      console.log(`\n❌ MISSING (UNSCHEDULED) APPOINTMENTS:`);
+      console.log(`\n MISSING (UNSCHEDULED) APPOINTMENTS:`);
 
       const appointmentMap = new Map();
       allAppointments
         .filter((apt) =>
-          ["scheduled", "in_progress", "completed"].includes(apt.status)
+          ["scheduled", "in_progress", "completed"].includes(apt.status),
         )
         .forEach((apt) => {
           const dateKey = apt.date.toISOString().split("T")[0];
@@ -228,27 +228,27 @@ async function comprehensiveDiagnostic() {
         console.log(`\nAll missing appointments:`);
         missing.forEach((m, idx) => {
           console.log(
-            `  ${idx + 1}. ${m.date} (${m.dayName}) - Visit ${m.visitNumber} at ${m.time}`
+            `  ${idx + 1}. ${m.date} (${m.dayName}) - Visit ${m.visitNumber} at ${m.time}`,
           );
         });
       } else {
-        console.log(`✅ All appointments are scheduled!`);
+        console.log(` All appointments are scheduled!`);
       }
 
       // Check if there are care givers available for the missing dates
       if (missing.length > 0) {
         console.log(
-          `\n🔍 CHECKING CARE GIVER AVAILABILITY FOR FIRST MISSING DATE:`
+          `\n CHECKING CARE GIVER AVAILABILITY FOR FIRST MISSING DATE:`,
         );
         const firstMissing = missing[0];
         const visit = cr.dailyVisits.find(
-          (v) => v.visitNumber === firstMissing.visitNumber
+          (v) => v.visitNumber === firstMissing.visitNumber,
         );
 
         if (visit) {
           console.log(`\nDate: ${firstMissing.date}`);
           console.log(
-            `Visit: ${firstMissing.visitNumber} at ${firstMissing.time} (${visit.duration} min)`
+            `Visit: ${firstMissing.visitNumber} at ${firstMissing.time} (${visit.duration} min)`,
           );
           console.log(`Requirements: ${visit.requirements.join(", ")}`);
 
@@ -259,28 +259,28 @@ async function comprehensiveDiagnostic() {
           }).lean();
 
           console.log(
-            `\nCare givers with required skills: ${careGivers.length}`
+            `\nCare givers with required skills: ${careGivers.length}`,
           );
 
           if (careGivers.length > 0) {
             console.log("\nChecking each care giver:");
 
             for (const cg of careGivers) {
-              console.log(`\n  👤 ${cg.name}:`);
+              console.log(`\n   ${cg.name}:`);
 
               // Check if has Availability document
               const checkDate = new Date(firstMissing.date);
               const avail = await Availability.getCurrentForCareGiver(
                 cg._id,
-                checkDate
+                checkDate,
               );
 
               if (!avail) {
-                console.log(`     ❌ No Availability document`);
+                console.log(`      No Availability document`);
                 continue;
               }
 
-              console.log(`     ✅ Has Availability document`);
+              console.log(`      Has Availability document`);
 
               // Check day schedule
               const utcDay = checkDate.getUTCDay();
@@ -296,16 +296,16 @@ async function comprehensiveDiagnostic() {
               const dayOfWeek = dayNames[utcDay];
 
               const daySchedule = avail.schedule.find(
-                (s) => s.dayOfWeek === dayOfWeek
+                (s) => s.dayOfWeek === dayOfWeek,
               );
 
               if (!daySchedule || daySchedule.slots.length === 0) {
-                console.log(`     ❌ Not working on ${dayOfWeek}`);
+                console.log(`      Not working on ${dayOfWeek}`);
                 continue;
               }
 
               console.log(
-                `     ✅ Works on ${dayOfWeek}: ${daySchedule.slots.map((s) => `${s.startTime}-${s.endTime}`).join(", ")}`
+                `      Works on ${dayOfWeek}: ${daySchedule.slots.map((s) => `${s.startTime}-${s.endTime}`).join(", ")}`,
               );
 
               // Check if time fits
@@ -318,21 +318,21 @@ async function comprehensiveDiagnostic() {
               const fitsInSlot = daySchedule.slots.some(
                 (slot) =>
                   visit.preferredTime >= slot.startTime &&
-                  endTime <= slot.endTime
+                  endTime <= slot.endTime,
               );
 
               if (fitsInSlot) {
                 console.log(
-                  `     ✅ Time slot fits: ${visit.preferredTime}-${endTime}`
+                  `      Time slot fits: ${visit.preferredTime}-${endTime}`,
                 );
               } else {
                 console.log(
-                  `     ❌ Time doesn't fit: ${visit.preferredTime}-${endTime}`
+                  `      Time doesn't fit: ${visit.preferredTime}-${endTime}`,
                 );
               }
             }
           } else {
-            console.log(`  ❌ No care givers have the required skills!`);
+            console.log(`   No care givers have the required skills!`);
           }
         }
       }
@@ -344,7 +344,7 @@ async function comprehensiveDiagnostic() {
     console.log("DIAGNOSTIC COMPLETE");
     console.log("=".repeat(70) + "\n");
   } catch (error) {
-    console.error("❌ Error:", error);
+    console.error(" Error:", error);
     console.error(error.stack);
   } finally {
     await mongoose.disconnect();

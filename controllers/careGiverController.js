@@ -107,12 +107,12 @@ const createCareGiver = async (req, res, next) => {
       });
 
       console.log(
-        "✅ Normalized time off:",
+        " Normalized time off:",
         req.body.timeOff.map((to) => ({
           start: to.startDate.toISOString().split("T")[0],
           end: to.endDate.toISOString().split("T")[0],
           reason: to.reason,
-        }))
+        })),
       );
     }
 
@@ -126,9 +126,9 @@ const createCareGiver = async (req, res, next) => {
           console.log("🗺️ Geocoding:", fullAddress);
           const coordinates = await geocodeAddress(fullAddress);
           req.body.coordinates = coordinates;
-          console.log("✅ Geocoded successfully");
+          console.log(" Geocoded successfully");
         } catch (geoError) {
-          console.log("⚠️ Geocoding failed:", geoError.message);
+          console.log(" Geocoding failed:", geoError.message);
           console.log("📍 Using default coordinates (London)");
           req.body.coordinates = {
             type: "Point",
@@ -151,9 +151,9 @@ const createCareGiver = async (req, res, next) => {
     }
 
     // CREATE CARE GIVER
-    console.log("💾 Creating care giver...");
+    console.log(" Creating care giver...");
     const careGiver = await CareGiver.create(req.body);
-    console.log("✅ Created:", careGiver._id);
+    console.log(" Created:", careGiver._id);
 
     // AUTO-SYNC AVAILABILITY
     if (careGiver.availability && careGiver.availability.length > 0) {
@@ -167,9 +167,9 @@ const createCareGiver = async (req, res, next) => {
           notes: "Auto-created with care giver",
           version: 1,
         });
-        console.log("✅ Availability synced");
+        console.log(" Availability synced");
       } catch (availError) {
-        console.log("⚠️ Availability sync failed:", availError.message);
+        console.log(" Availability sync failed:", availError.message);
       }
     }
 
@@ -179,7 +179,7 @@ const createCareGiver = async (req, res, next) => {
       message: "Care giver created successfully",
     });
   } catch (error) {
-    console.error("❌ ERROR:", error.message);
+    console.error(" ERROR:", error.message);
 
     if (error.name === "ValidationError") {
       const errors = Object.values(error.errors).map((e) => e.message);
@@ -244,10 +244,10 @@ const updateCareGiver = async (req, res, next) => {
         };
       });
 
-      console.log("✅ Normalized time off dates:");
+      console.log(" Normalized time off dates:");
       req.body.timeOff.forEach((to, idx) => {
         console.log(
-          `   ${idx + 1}. ${to.startDate.toISOString()} → ${to.endDate.toISOString()} (${to.reason})`
+          `   ${idx + 1}. ${to.startDate.toISOString()} → ${to.endDate.toISOString()} (${to.reason})`,
         );
       });
     }
@@ -301,7 +301,7 @@ const updateCareGiver = async (req, res, next) => {
           if (req.body.timeOff) existing.timeOff = req.body.timeOff;
           existing.notes = "Updated with care giver";
           await existing.save();
-          console.log("✅ Availability updated");
+          console.log(" Availability updated");
         } else {
           await Availability.create({
             careGiver: careGiver._id,
@@ -312,7 +312,7 @@ const updateCareGiver = async (req, res, next) => {
             notes: "Auto-created on update",
             version: 1,
           });
-          console.log("✅ Availability created");
+          console.log(" Availability created");
         }
       } catch (availError) {
         console.log("Availability sync error:", availError.message);
@@ -418,16 +418,16 @@ const getCareGiverSchedule = async (req, res, next) => {
 
     // Log which appointments are primary vs secondary
     const primaryCount = appointments.filter(
-      (apt) => apt.careGiver && apt.careGiver._id.toString() === req.params.id
+      (apt) => apt.careGiver && apt.careGiver._id.toString() === req.params.id,
     ).length;
     const secondaryCount = appointments.filter(
       (apt) =>
         apt.secondaryCareGiver &&
-        apt.secondaryCareGiver._id.toString() === req.params.id
+        apt.secondaryCareGiver._id.toString() === req.params.id,
     ).length;
 
     console.log(
-      `[CG Schedule] Primary: ${primaryCount}, Secondary: ${secondaryCount}`
+      `[CG Schedule] Primary: ${primaryCount}, Secondary: ${secondaryCount}`,
     );
 
     res.json({

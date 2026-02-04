@@ -13,7 +13,7 @@ async function migrateAvailabilityData() {
   try {
     // Connect to database
     await mongoose.connect(process.env.MONGODB_URI);
-    console.log("✅ Connected to MongoDB\n");
+    console.log(" Connected to MongoDB\n");
     console.log(`📦 Database: ${mongoose.connection.name}\n`);
 
     // Get all care givers
@@ -42,7 +42,7 @@ async function migrateAvailabilityData() {
 
         // Check if has availability data
         if (!cg.availability || cg.availability.length === 0) {
-          console.log(`  ⚠️  No availability data, skipping`);
+          console.log(`    No availability data, skipping`);
           skipped++;
           continue;
         }
@@ -70,11 +70,11 @@ async function migrateAvailabilityData() {
         });
 
         console.log(
-          `  ✅ Migrated (ID: ${availability._id}, Version: ${availability.version})`
+          `   Migrated (ID: ${availability._id}, Version: ${availability.version})`,
         );
         migrated++;
       } catch (error) {
-        console.log(`  ❌ Error: ${error.message}`);
+        console.log(`   Error: ${error.message}`);
         errors++;
       }
     }
@@ -83,16 +83,16 @@ async function migrateAvailabilityData() {
     console.log("📊 Migration Summary:");
     console.log("=".repeat(60));
     console.log(`Total Care Givers: ${careGivers.length}`);
-    console.log(`✅ Migrated: ${migrated}`);
+    console.log(` Migrated: ${migrated}`);
     console.log(`⏭️  Skipped: ${skipped}`);
-    console.log(`❌ Errors: ${errors}`);
+    console.log(` Errors: ${errors}`);
     console.log("=".repeat(60) + "\n");
 
     if (migrated > 0) {
-      console.log("✅ Migration completed successfully!\n");
+      console.log(" Migration completed successfully!\n");
       console.log("📝 Next Steps:");
       console.log(
-        "1. Run verification: node scripts/migrate-availability.js verify"
+        "1. Run verification: node scripts/migrate-availability.js verify",
       );
       console.log('2. Check MongoDB for "availabilities" collection');
       console.log("3. Update backend services to use Availability collection");
@@ -102,18 +102,18 @@ async function migrateAvailabilityData() {
       console.log("ℹ️  No data was migrated\n");
     }
   } catch (error) {
-    console.error("❌ Migration failed:", error.message);
+    console.error(" Migration failed:", error.message);
     console.error("Stack:", error.stack);
     throw error;
   } finally {
     await mongoose.connection.close();
-    console.log("✅ Database connection closed\n");
+    console.log(" Database connection closed\n");
   }
 }
 
 // Verification function - Check migration results
 async function verifyMigration() {
-  console.log("\n🔍 Verifying Migration...\n");
+  console.log("\n Verifying Migration...\n");
 
   await mongoose.connect(process.env.MONGODB_URI);
   console.log(`📦 Database: ${mongoose.connection.name}\n`);
@@ -128,12 +128,12 @@ async function verifyMigration() {
   console.log(`Care Givers: ${careGiversCount}`);
   console.log(`Current Availability Records: ${availabilityCount}`);
   console.log(
-    `Total Availability Records (including history): ${totalAvailability}`
+    `Total Availability Records (including history): ${totalAvailability}`,
   );
 
   if (availabilityCount < careGiversCount) {
     console.log(
-      `\n⚠️  ${careGiversCount - availabilityCount} care givers missing availability`
+      `\n  ${careGiversCount - availabilityCount} care givers missing availability`,
     );
 
     // Find which care givers are missing
@@ -149,19 +149,19 @@ async function verifyMigration() {
       }
     }
   } else {
-    console.log("\n✅ All care givers have availability records");
+    console.log("\n All care givers have availability records");
   }
 
   // Sample check
   const sample = await Availability.findOne({ effectiveTo: null }).populate(
     "careGiver",
-    "name email"
+    "name email",
   );
 
   if (sample) {
-    console.log("\n📋 Sample Record:");
+    console.log("\n Sample Record:");
     console.log(
-      `Care Giver: ${sample.careGiver.name} (${sample.careGiver.email})`
+      `Care Giver: ${sample.careGiver.name} (${sample.careGiver.email})`,
     );
     console.log(`Version: ${sample.version}`);
     console.log(`Effective From: ${sample.effectiveFrom.toISOString()}`);
@@ -185,17 +185,17 @@ async function verifyMigration() {
 
   if (versionsCheck.length > 0) {
     console.log(
-      `\n📚 ${versionsCheck.length} care giver(s) have multiple availability versions (history)`
+      `\n📚 ${versionsCheck.length} care giver(s) have multiple availability versions (history)`,
     );
   }
 
-  console.log("\n✅ Verification complete");
+  console.log("\n Verification complete");
   await mongoose.connection.close();
 }
 
 // Rollback function - In case you need to undo
 async function rollbackMigration() {
-  console.log("\n⚠️  Rolling back migration...\n");
+  console.log("\n  Rolling back migration...\n");
 
   const readline = require("readline").createInterface({
     input: process.stdin,
@@ -218,14 +218,14 @@ async function rollbackMigration() {
       });
 
       console.log(
-        `\n✅ Deleted ${result.deletedCount} migrated availability records`
+        `\n Deleted ${result.deletedCount} migrated availability records`,
       );
 
       await mongoose.connection.close();
-      console.log("✅ Rollback complete\n");
+      console.log(" Rollback complete\n");
       readline.close();
       process.exit(0);
-    }
+    },
   );
 }
 
@@ -267,13 +267,13 @@ if (require.main === module) {
       console.log("\n📚 Availability Migration Tool\n");
       console.log("Usage:");
       console.log(
-        "  node scripts/migrate-availability.js migrate   - Run migration"
+        "  node scripts/migrate-availability.js migrate   - Run migration",
       );
       console.log(
-        "  node scripts/migrate-availability.js verify    - Verify results"
+        "  node scripts/migrate-availability.js verify    - Verify results",
       );
       console.log(
-        "  node scripts/migrate-availability.js rollback  - Undo migration (careful!)\n"
+        "  node scripts/migrate-availability.js rollback  - Undo migration (careful!)\n",
       );
       process.exit(0);
   }

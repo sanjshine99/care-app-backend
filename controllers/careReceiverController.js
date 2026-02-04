@@ -72,7 +72,7 @@ exports.getCareReceiverById = async (req, res, next) => {
   try {
     const careReceiver = await CareReceiver.findById(req.params.id).populate(
       "preferredCareGiver",
-      "name email phone skills"
+      "name email phone skills",
     );
 
     if (!careReceiver) {
@@ -142,9 +142,9 @@ exports.createCareReceiver = async (req, res, next) => {
         type: "Point",
         coordinates: [coordinates.longitude, coordinates.latitude],
       };
-      console.log("✅ Geocoded:", coordinates);
+      console.log(" Geocoded:", coordinates);
     } catch (geocodeError) {
-      console.error("❌ Geocoding failed:", geocodeError.message);
+      console.error(" Geocoding failed:", geocodeError.message);
       return res.status(400).json({
         success: false,
         error: {
@@ -172,12 +172,12 @@ exports.createCareReceiver = async (req, res, next) => {
 
     // Create care receiver
     const careReceiver = await CareReceiver.create(req.body);
-    console.log("✅ Created! ID:", careReceiver._id);
+    console.log(" Created! ID:", careReceiver._id);
 
     // Verify it exists in DB
     const verify = await CareReceiver.findById(careReceiver._id);
     if (verify) {
-      console.log("✅ VERIFIED - Exists in DB!");
+      console.log(" VERIFIED - Exists in DB!");
     }
 
     // Populate preferred care giver if exists
@@ -189,7 +189,7 @@ exports.createCareReceiver = async (req, res, next) => {
       message: "Care receiver created successfully",
     });
   } catch (error) {
-    console.error("❌ CREATE ERROR:", error);
+    console.error(" CREATE ERROR:", error);
 
     if (error.name === "ValidationError") {
       const errors = Object.values(error.errors).map((err) => err.message);
@@ -242,9 +242,9 @@ exports.updateCareReceiver = async (req, res, next) => {
             type: "Point",
             coordinates: [coordinates.longitude, coordinates.latitude],
           };
-          console.log("✅ Re-geocoded:", coordinates);
+          console.log(" Re-geocoded:", coordinates);
         } catch (geocodeError) {
-          console.error("❌ Re-geocoding failed:", geocodeError.message);
+          console.error(" Re-geocoding failed:", geocodeError.message);
           return res.status(400).json({
             success: false,
             error: {
@@ -278,10 +278,10 @@ exports.updateCareReceiver = async (req, res, next) => {
       {
         new: true,
         runValidators: true,
-      }
+      },
     ).populate("preferredCareGiver", "name email");
 
-    console.log("✅ Updated successfully");
+    console.log(" Updated successfully");
 
     res.json({
       success: true,
@@ -289,7 +289,7 @@ exports.updateCareReceiver = async (req, res, next) => {
       message: "Care receiver updated successfully",
     });
   } catch (error) {
-    console.error("❌ UPDATE ERROR:", error);
+    console.error(" UPDATE ERROR:", error);
 
     if (error.name === "ValidationError") {
       const errors = Object.values(error.errors).map((err) => err.message);
@@ -342,14 +342,14 @@ exports.deleteCareReceiver = async (req, res, next) => {
     }
 
     await CareReceiver.findByIdAndDelete(req.params.id);
-    console.log("✅ Deleted successfully");
+    console.log(" Deleted successfully");
 
     res.json({
       success: true,
       message: "Care receiver deleted successfully",
     });
   } catch (error) {
-    console.error("❌ DELETE ERROR:", error);
+    console.error(" DELETE ERROR:", error);
     next(error);
   }
 };
@@ -481,7 +481,7 @@ exports.getSuitableCareGivers = async (req, res, next) => {
     const visits = visitNumber
       ? [
           careReceiver.dailyVisits.find(
-            (v) => v.visitNumber === parseInt(visitNumber)
+            (v) => v.visitNumber === parseInt(visitNumber),
           ),
         ]
       : careReceiver.dailyVisits;
@@ -534,7 +534,7 @@ exports.getSuitableCareGivers = async (req, res, next) => {
       const careGiversWithDistance = careGivers.map((cg) => {
         const distance = calculateDistance(
           careReceiver.coordinates.coordinates,
-          cg.coordinates.coordinates
+          cg.coordinates.coordinates,
         );
         return {
           ...cg.toObject(),

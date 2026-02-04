@@ -112,13 +112,13 @@ router.post("/test-create", async (req, res) => {
       canDrive: true,
     };
 
-    console.log("💾 Creating test care giver...");
+    console.log(" Creating test care giver...");
     const careGiver = await CareGiver.create(testData);
-    console.log("✅ Created:", careGiver._id);
+    console.log(" Created:", careGiver._id);
 
     // Verify it exists
     const verification = await CareGiver.findById(careGiver._id);
-    console.log("🔍 Verification:", verification ? "FOUND" : "NOT FOUND");
+    console.log(" Verification:", verification ? "FOUND" : "NOT FOUND");
 
     // Count all
     const count = await CareGiver.countDocuments();
@@ -136,7 +136,7 @@ router.post("/test-create", async (req, res) => {
       totalCount: count,
     });
   } catch (error) {
-    console.error("❌ Test create failed:", error);
+    console.error(" Test create failed:", error);
     res.status(500).json({
       success: false,
       error: error.message,
