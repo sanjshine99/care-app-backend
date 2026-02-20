@@ -41,9 +41,9 @@ exports.generateSchedule = async (req, res, next) => {
       });
     }
 
-    // FIXED: Set start to beginning of day, end to END of day
+    // FIXED: Set start to beginning of day, end to END of day (both UTC)
     const start = new Date(startDate);
-    start.setHours(0, 0, 0, 0); // Start of day
+    start.setUTCHours(0, 0, 0, 0); // Start of day (UTC - avoids timezone shift)
 
     const end = new Date(endDate + "T23:59:59.999Z"); // END of day (includes entire day)
 
@@ -1261,7 +1261,7 @@ exports.validateSchedule = async (req, res, next) => {
     }
 
     const start = new Date(startDate);
-    start.setHours(0, 0, 0, 0);
+    start.setUTCHours(0, 0, 0, 0);
 
     const end = new Date(endDate + "T23:59:59.999Z");
 

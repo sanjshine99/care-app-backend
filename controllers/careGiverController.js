@@ -319,6 +319,34 @@ const updateCareGiver = async (req, res, next) => {
       }
     }
 
+    // AUTO-INVALIDATE appointments that fall in new time off periods
+    if (req.body.timeOff && req.body.timeOff.length > 0) {
+      try {
+        for (const timeOff of req.body.timeOff) {
+          await Appointment.updateMany(
+            {
+              $or: [
+                { careGiver: careGiver._id },
+                { secondaryCareGiver: careGiver._id },
+              ],
+              date: { $gte: timeOff.startDate, $lte: timeOff.endDate },
+              status: { $in: ["scheduled", "in_progress"] },
+            },
+            {
+              $set: {
+                status: "needs_reassignment",
+                invalidationReason: `Care giver on time off (${timeOff.reason || "Personal"})`,
+                invalidatedAt: new Date(),
+              },
+            }
+          );
+        }
+        console.log(" Appointments in time off periods marked for reassignment");
+      } catch (invalidateError) {
+        console.log("Appointment invalidation error:", invalidateError.message);
+      }
+    }
+
     res.json({
       success: true,
       data: { careGiver },
@@ -357,6 +385,24 @@ const deleteCareGiver = async (req, res, next) => {
 
     await CareGiver.findByIdAndDelete(req.params.id);
     await Availability.deleteMany({ careGiver: req.params.id });
+
+    // Mark all active appointments as needs_reassignment
+    await Appointment.updateMany(
+      {
+        $or: [
+          { careGiver: req.params.id },
+          { secondaryCareGiver: req.params.id },
+        ],
+        status: { $in: ["scheduled", "in_progress"] },
+      },
+      {
+        $set: {
+          status: "needs_reassignment",
+          invalidationReason: "Care giver was deleted",
+          invalidatedAt: new Date(),
+        },
+      }
+    );
 
     res.json({
       success: true,

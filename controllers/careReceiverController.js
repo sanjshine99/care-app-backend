@@ -271,6 +271,17 @@ exports.updateCareReceiver = async (req, res, next) => {
       }
     }
 
+    // Detect if daily visits schedule changed (days of week changed)
+    const oldVisitDays = (careReceiver.dailyVisits || []).map((v) =>
+      JSON.stringify((v.daysOfWeek || []).sort())
+    );
+    const newVisitDays = (req.body.dailyVisits || []).map((v) =>
+      JSON.stringify((v.daysOfWeek || []).sort())
+    );
+    const scheduleChanged =
+      req.body.dailyVisits &&
+      JSON.stringify(oldVisitDays) !== JSON.stringify(newVisitDays);
+
     // Update
     careReceiver = await CareReceiver.findByIdAndUpdate(
       req.params.id,
@@ -282,6 +293,31 @@ exports.updateCareReceiver = async (req, res, next) => {
     ).populate("preferredCareGiver", "name email");
 
     console.log(" Updated successfully");
+
+    // If visit schedule changed, mark future appointments for review
+    if (scheduleChanged) {
+      const Appointment = require("../models/Appointment");
+      const today = new Date();
+      today.setUTCHours(0, 0, 0, 0);
+
+      const updatedCount = await Appointment.updateMany(
+        {
+          careReceiver: req.params.id,
+          date: { $gte: today },
+          status: { $in: ["scheduled", "in_progress"] },
+        },
+        {
+          $set: {
+            status: "needs_reassignment",
+            invalidationReason: "Care receiver visit schedule was changed",
+            invalidatedAt: new Date(),
+          },
+        }
+      );
+      console.log(
+        ` Schedule changed - marked ${updatedCount.modifiedCount} appointments for reassignment`
+      );
+    }
 
     res.json({
       success: true,

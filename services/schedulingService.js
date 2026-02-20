@@ -459,9 +459,12 @@ async function findBestCareGiver(
     query.gender = careReceiver.genderPreference;
   }
 
-  if (!visit.doubleHanded) {
+  // For double-handed visits, only use care givers who can work in pairs
+  // (singleHandedOnly = false means they CAN do double-handed care)
+  if (visit.doubleHanded) {
     query.singleHandedOnly = false;
   }
+  // For non-double-handed visits, all care givers are eligible (including singleHandedOnly=true)
 
   query.coordinates = {
     $near: {
