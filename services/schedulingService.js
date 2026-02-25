@@ -425,13 +425,68 @@ async function isCareGiverAvailable(
 }
 
 /**
- * Find best care giver for a visit
+ * Generate alternative time slots sorted by proximity to preferred time.
+ * Used as fallback when the preferred time is unavailable.
+ *
+ * @param {Object} visit - The visit object with preferredTime and duration
+ * @param {number} intervalMinutes - Step size between alternative times (default 30)
+ * @param {number} maxAlternatives - Max number of alternatives to generate (default 10)
+ * @returns {string[]} Array of time strings (HH:MM) ordered closest-first from preferred
+ */
+function generateAlternativeTimes(visit, intervalMinutes = 30, maxAlternatives = 10) {
+  const [prefHours, prefMinutes] = visit.preferredTime.split(":").map(Number);
+  const prefTotalMinutes = prefHours * 60 + prefMinutes;
+
+  // Ensure visit ends before 22:00 and starts no earlier than 07:00
+  const workStart = 7 * 60; // 07:00
+  const workEnd = 22 * 60 - visit.duration; // Latest possible start time
+
+  const alternatives = [];
+
+  // Interleave later and earlier times, sorted by proximity to preferred
+  for (
+    let delta = intervalMinutes;
+    alternatives.length < maxAlternatives;
+    delta += intervalMinutes
+  ) {
+    const later = prefTotalMinutes + delta;
+    const earlier = prefTotalMinutes - delta;
+
+    const hasLater = later <= workEnd;
+    const hasEarlier = earlier >= workStart;
+
+    if (!hasLater && !hasEarlier) break;
+
+    if (hasLater) {
+      const h = Math.floor(later / 60);
+      const m = later % 60;
+      alternatives.push(`${h}:${m.toString().padStart(2, "0")}`);
+    }
+
+    if (hasEarlier && alternatives.length < maxAlternatives) {
+      const h = Math.floor(earlier / 60);
+      const m = earlier % 60;
+      alternatives.push(`${h}:${m.toString().padStart(2, "0")}`);
+    }
+  }
+
+  return alternatives;
+}
+
+/**
+ * Find best care giver for a visit.
+ * Tries the preferred time first; if no caregiver is available, searches
+ * alternative time slots in 30-minute increments closest to preferred time.
+ *
+ * @param {string|null} forcedTime - When set, only this time is tried (used for
+ *   double-handed secondary caregiver to match the primary's scheduled time).
  */
 async function findBestCareGiver(
   careReceiver,
   visit,
   date,
   excludeCareGiverId = null,
+  forcedTime = null,
 ) {
   console.log(
     `\n[Find Best] Looking for care giver for Visit ${visit.visitNumber}`,
@@ -484,74 +539,105 @@ async function findBestCareGiver(
   if (potentialCareGivers.length === 0) {
     return {
       careGiver: null,
+      scheduledTime: null,
       reason: `No care givers with required skills within ${maxDistanceKm}km`,
     };
   }
 
-  const [hours, minutes] = visit.preferredTime.split(":").map(Number);
-  const endMinutes = minutes + visit.duration;
-  const endTime = `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
+  // Determine which times to try:
+  // - If forcedTime is set (e.g. secondary caregiver must match primary), only try that time
+  // - Otherwise try preferred time first, then alternatives sorted by proximity
+  const timesToTry = forcedTime
+    ? [forcedTime]
+    : [visit.preferredTime, ...generateAlternativeTimes(visit)];
 
-  const scoredCareGivers = [];
+  for (const tryTime of timesToTry) {
+    const [hours, minutes] = tryTime.split(":").map(Number);
+    const endMinutes = minutes + visit.duration;
+    const tryEndTime = `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
 
-  for (const cg of potentialCareGivers) {
-    const availabilityCheck = await isCareGiverAvailable(
-      cg._id,
-      date,
-      visit.preferredTime,
-      endTime,
-      careReceiver.coordinates.coordinates,
-    );
+    const scoredCareGivers = [];
 
-    if (availabilityCheck.available) {
-      const distance = calculateDistance(
+    for (const cg of potentialCareGivers) {
+      const availabilityCheck = await isCareGiverAvailable(
+        cg._id,
+        date,
+        tryTime,
+        tryEndTime,
         careReceiver.coordinates.coordinates,
-        cg.coordinates.coordinates,
       );
 
-      let score = distance;
-      if (
-        careReceiver.preferredCareGiver &&
-        cg._id.equals(careReceiver.preferredCareGiver)
-      ) {
-        score -= 10;
+      if (availabilityCheck.available) {
+        const distance = calculateDistance(
+          careReceiver.coordinates.coordinates,
+          cg.coordinates.coordinates,
+        );
+
+        let score = distance;
+        if (
+          careReceiver.preferredCareGiver &&
+          cg._id.equals(careReceiver.preferredCareGiver)
+        ) {
+          score -= 10;
+        }
+
+        scoredCareGivers.push({ careGiver: cg, score, distance });
+      }
+    }
+
+    if (scoredCareGivers.length > 0) {
+      scoredCareGivers.sort((a, b) => a.score - b.score);
+      const selected = scoredCareGivers[0];
+
+      if (tryTime !== visit.preferredTime) {
+        console.log(
+          `[Find Best] Using alternative time ${tryTime} (preferred was ${visit.preferredTime})`,
+        );
       }
 
-      scoredCareGivers.push({ careGiver: cg, score, distance });
+      console.log(`[Find Best]  Selected: ${selected.careGiver.name} at ${tryTime}`);
+      return {
+        careGiver: selected.careGiver,
+        scheduledTime: tryTime,
+        scheduledEndTime: tryEndTime,
+        reason: null,
+      };
     }
   }
 
-  if (scoredCareGivers.length === 0) {
-    return {
-      careGiver: null,
-      reason: "All care givers are unavailable or have conflicts",
-    };
-  }
-
-  scoredCareGivers.sort((a, b) => a.score - b.score);
-  console.log(`[Find Best]  Selected: ${scoredCareGivers[0].careGiver.name}`);
-  return { careGiver: scoredCareGivers[0].careGiver, reason: null };
+  return {
+    careGiver: null,
+    scheduledTime: null,
+    reason: "All care givers are unavailable at all time slots",
+  };
 }
 
 /**
- * Find SECOND care giver for double-handed care
+ * Find SECOND care giver for double-handed care.
+ * Must be available at the same time as the primary caregiver.
+ *
+ * @param {string} scheduledTime - The time already chosen for the primary caregiver
  */
 async function findSecondaryCareGiver(
   careReceiver,
   visit,
   date,
   primaryCareGiverId,
+  scheduledTime,
 ) {
   console.log(
     `\n[Find Secondary] Looking for SECOND care giver (double-handed)`,
   );
   console.log(`[Find Secondary] Primary CG: ${primaryCareGiverId}`);
+  console.log(`[Find Secondary] Must match time: ${scheduledTime}`);
 
+  // Force the same time as the primary caregiver
   const result = await findBestCareGiver(
     careReceiver,
     visit,
     date,
     primaryCareGiverId,
+    scheduledTime,
   );
 
   if (result.careGiver) {
@@ -642,7 +728,7 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
         console.log(`[Schedule] 🤝 DOUBLE-HANDED CARE REQUIRED`);
       }
 
-      // Find primary care giver
+      // Find primary care giver (tries preferred time first, then alternatives)
       const primaryCGResult = await findBestCareGiver(
         careReceiver,
         visit,
@@ -659,15 +745,19 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
         continue;
       }
 
+      // Use the actual time the caregiver was found available at
+      const scheduledTime = primaryCGResult.scheduledTime || visit.preferredTime;
+
       let secondaryCareGiver = null;
 
-      // Find SECOND care giver if double-handed
+      // Find SECOND care giver if double-handed — must match the primary's scheduled time
       if (visit.doubleHanded) {
         const secondaryCGResult = await findSecondaryCareGiver(
           careReceiver,
           visit,
           currentDate,
           primaryCGResult.careGiver._id,
+          scheduledTime,
         );
 
         if (!secondaryCGResult.careGiver) {
@@ -688,10 +778,11 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
         );
       }
 
-      // Calculate end time
-      const [hours, minutes] = visit.preferredTime.split(":").map(Number);
+      // Calculate end time from the actual scheduled time (may differ from preferred)
+      const [hours, minutes] = scheduledTime.split(":").map(Number);
       const endMinutes = minutes + visit.duration;
-      const endTime = `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
+      const endTime = primaryCGResult.scheduledEndTime ||
+        `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
 
       // Normalize appointment date to UTC midnight
       const appointmentDate = new Date(currentDate);
@@ -723,7 +814,7 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
           careReceiver: careReceiver._id,
           careGiver: primaryCGResult.careGiver._id,
           date: utcAppointmentDate,
-          startTime: visit.preferredTime,
+          startTime: scheduledTime,
           endTime,
           duration: visit.duration,
           visitNumber: visit.visitNumber,
@@ -735,7 +826,9 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
           schedulingMetadata: {
             scheduledAt: new Date(),
             schedulingMethod: "automatic",
-            algorithmVersion: "3.0-preferred-days-fixed",
+            algorithmVersion: "3.1-alternative-timeslots",
+            preferredTime: visit.preferredTime,
+            usedAlternativeTime: scheduledTime !== visit.preferredTime,
           },
         };
 
