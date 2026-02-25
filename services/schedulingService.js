@@ -7,6 +7,25 @@ const CareReceiver = require("../models/CareReceiver");
 const Appointment = require("../models/Appointment");
 const settingsService = require("./settingsService");
 
+// ─── In-run caches ───────────────────────────────────────────────────────────
+// Availability records are immutable during a scheduling run.
+// Keyed by `${careGiverId}_${dateStr}` → Availability document (or null).
+const _availabilityCache = new Map();
+
+function _clearRunCaches() {
+  _availabilityCache.clear();
+}
+
+async function _getCachedAvailability(careGiverId, date) {
+  const dateStr = date.toISOString().split("T")[0];
+  const key = `${careGiverId}_${dateStr}`;
+  if (!_availabilityCache.has(key)) {
+    const av = await Availability.getCurrentForCareGiver(careGiverId, date);
+    _availabilityCache.set(key, av);
+  }
+  return _availabilityCache.get(key);
+}
+
 /**
  * Calculate travel time between two locations
  */
@@ -169,7 +188,14 @@ function isDateInSchedule(checkDate, visit, careReceiverCreatedAt) {
 }
 
 /**
- * Check if care giver is available
+ * Check if care giver is available.
+ *
+ * Performance: accepts two optional cache objects to avoid repeated DB
+ * round-trips when called many times per scheduling run:
+ *   - careGiverObj  — pre-fetched CareGiver document (skips findById)
+ *   - dayApptCache  — Map<careGiverId → appointments[]> for the current day
+ *                     (skips Appointment.find; updated by the caller after
+ *                     each new appointment is created)
  */
 async function isCareGiverAvailable(
   careGiverId,
@@ -178,6 +204,7 @@ async function isCareGiverAvailable(
   endTime,
   careReceiverLocation,
   excludeAppointmentId = null,
+  { careGiverObj = null, dayApptCache = null } = {},
 ) {
   const result = {
     available: false,
@@ -189,7 +216,8 @@ async function isCareGiverAvailable(
   const travelTimeBuffer = settings.travelTimeBufferMinutes || 15;
   const maxAppointmentsPerDay = settings.maxAppointmentsPerDay || 8;
 
-  const careGiver = await CareGiver.findById(careGiverId);
+  // Use pre-fetched caregiver when available; fall back to DB lookup
+  const careGiver = careGiverObj || (await CareGiver.findById(careGiverId));
   if (!careGiver || !careGiver.isActive) {
     result.reason = careGiver
       ? "Care giver is inactive"
@@ -234,66 +262,23 @@ async function isCareGiverAvailable(
     }
   }
 
-  // Get availability
-  let availability = await Availability.getCurrentForCareGiver(
-    careGiverId,
-    date,
-  );
+  // Get availability — use module-level cache so the same record is not
+  // re-fetched for every time-slot attempt on the same caregiver + day
+  const availability = await _getCachedAvailability(careGiverId, date);
 
-  if (
-    !availability ||
-    !availability.schedule ||
-    availability.schedule.length === 0
-  ) {
-    if (careGiver.availability && careGiver.availability.length > 0) {
-      // Use UTC day of week
-      const utcDay = date.getUTCDay();
-      const dayNames = [
-        "Sunday",
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-      ];
-      const dayOfWeek = dayNames[utcDay];
+  const utcDay = date.getUTCDay();
+  const dayNames = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+  ];
+  const dayOfWeek = dayNames[utcDay];
 
-      const daySchedule = careGiver.availability.find(
-        (a) => a.dayOfWeek === dayOfWeek,
-      );
-
-      if (!daySchedule || daySchedule.slots.length === 0) {
-        result.reason = `Not working on ${dayOfWeek}`;
-        return result;
-      }
-
-      const isInWorkingHours = daySchedule.slots.some(
-        (slot) => startTime >= slot.startTime && endTime <= slot.endTime,
-      );
-
-      if (!isInWorkingHours) {
-        result.reason = "Outside working hours";
-        return result;
-      }
-    } else {
-      result.reason = "No availability schedule defined";
-      return result;
-    }
-  } else {
-    // Use UTC day of week
-    const utcDay = date.getUTCDay();
-    const dayNames = [
-      "Sunday",
-      "Monday",
-      "Tuesday",
-      "Wednesday",
-      "Thursday",
-      "Friday",
-      "Saturday",
-    ];
-    const dayOfWeek = dayNames[utcDay];
-
+  if (availability && availability.schedule && availability.schedule.length > 0) {
     const daySchedule = availability.schedule.find(
       (s) => s.dayOfWeek === dayOfWeek,
     );
@@ -311,27 +296,68 @@ async function isCareGiverAvailable(
       result.reason = "Outside working hours";
       return result;
     }
+  } else if (careGiver.availability && careGiver.availability.length > 0) {
+    // Fall back to embedded availability on the CareGiver document
+    const daySchedule = careGiver.availability.find(
+      (a) => a.dayOfWeek === dayOfWeek,
+    );
+
+    if (!daySchedule || daySchedule.slots.length === 0) {
+      result.reason = `Not working on ${dayOfWeek}`;
+      return result;
+    }
+
+    const isInWorkingHours = daySchedule.slots.some(
+      (slot) => startTime >= slot.startTime && endTime <= slot.endTime,
+    );
+
+    if (!isInWorkingHours) {
+      result.reason = "Outside working hours";
+      return result;
+    }
+  } else {
+    result.reason = "No availability schedule defined";
+    return result;
   }
 
-  // Check appointment conflicts
-  const startOfDay = new Date(date);
-  startOfDay.setUTCHours(0, 0, 0, 0);
-  const endOfDay = new Date(date);
-  endOfDay.setUTCHours(23, 59, 59, 999);
+  // ── Appointment conflict check ────────────────────────────────────────────
+  // Use the day-level appointment cache when provided so the same DB query is
+  // not repeated for every time-slot attempt on the same caregiver + day.
+  let existingAppointments;
+  const cgKey = careGiverId.toString();
 
-  const query = {
-    $or: [{ careGiver: careGiverId }, { secondaryCareGiver: careGiverId }],
-    date: { $gte: startOfDay, $lte: endOfDay },
-    status: { $in: ["scheduled", "in_progress"] },
-  };
+  if (dayApptCache && dayApptCache.has(cgKey)) {
+    existingAppointments = dayApptCache.get(cgKey);
+    if (excludeAppointmentId) {
+      existingAppointments = existingAppointments.filter(
+        (a) => !a._id.equals(excludeAppointmentId),
+      );
+    }
+  } else {
+    const startOfDay = new Date(date);
+    startOfDay.setUTCHours(0, 0, 0, 0);
+    const endOfDay = new Date(date);
+    endOfDay.setUTCHours(23, 59, 59, 999);
 
-  if (excludeAppointmentId) {
-    query._id = { $ne: excludeAppointmentId };
+    const query = {
+      $or: [{ careGiver: careGiverId }, { secondaryCareGiver: careGiverId }],
+      date: { $gte: startOfDay, $lte: endOfDay },
+      status: { $in: ["scheduled", "in_progress"] },
+    };
+
+    if (excludeAppointmentId) {
+      query._id = { $ne: excludeAppointmentId };
+    }
+
+    existingAppointments = await Appointment.find(query)
+      .populate("careReceiver", "name coordinates")
+      .sort({ startTime: 1 });
+
+    // Populate the cache so subsequent checks for this caregiver skip the query
+    if (dayApptCache) {
+      dayApptCache.set(cgKey, existingAppointments);
+    }
   }
-
-  const existingAppointments = await Appointment.find(query)
-    .populate("careReceiver", "name coordinates")
-    .sort({ startTime: 1 });
 
   if (existingAppointments.length >= maxAppointmentsPerDay) {
     result.reason = `Already has ${existingAppointments.length} appointments (max ${maxAppointmentsPerDay})`;
@@ -480,6 +506,9 @@ function generateAlternativeTimes(visit, intervalMinutes = 30, maxAlternatives =
  *
  * @param {string|null} forcedTime - When set, only this time is tried (used for
  *   double-handed secondary caregiver to match the primary's scheduled time).
+ * @param {Map|null} dayApptCache - Per-day appointment cache shared across
+ *   all availability checks on the same date. Eliminates repeated DB queries
+ *   for the same caregiver when trying multiple time slots.
  */
 async function findBestCareGiver(
   careReceiver,
@@ -487,6 +516,7 @@ async function findBestCareGiver(
   date,
   excludeCareGiverId = null,
   forcedTime = null,
+  dayApptCache = null,
 ) {
   console.log(
     `\n[Find Best] Looking for care giver for Visit ${visit.visitNumber}`,
@@ -565,6 +595,8 @@ async function findBestCareGiver(
         tryTime,
         tryEndTime,
         careReceiver.coordinates.coordinates,
+        null,
+        { careGiverObj: cg, dayApptCache },
       );
 
       if (availabilityCheck.available) {
@@ -617,6 +649,7 @@ async function findBestCareGiver(
  * Must be available at the same time as the primary caregiver.
  *
  * @param {string} scheduledTime - The time already chosen for the primary caregiver
+ * @param {Map|null} dayApptCache - Shared per-day appointment cache
  */
 async function findSecondaryCareGiver(
   careReceiver,
@@ -624,6 +657,7 @@ async function findSecondaryCareGiver(
   date,
   primaryCareGiverId,
   scheduledTime,
+  dayApptCache = null,
 ) {
   console.log(
     `\n[Find Secondary] Looking for SECOND care giver (double-handed)`,
@@ -638,6 +672,7 @@ async function findSecondaryCareGiver(
     date,
     primaryCareGiverId,
     scheduledTime,
+    dayApptCache,
   );
 
   if (result.careGiver) {
@@ -701,9 +736,23 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
   // Create a copy of startDate to avoid mutation
   const currentDate = new Date(startDate.getTime());
 
+  // Per-day appointment cache: Map<careGiverId → appointments[]>
+  // Reset for each new date so it always reflects the actual DB state.
+  // After each successful Appointment.create we append to the cache so
+  // subsequent checks within the same day see the freshly created record
+  // without an extra round-trip to MongoDB.
+  let dayApptCache = new Map();
+  let lastProcessedDate = null;
+
   while (currentDate <= endDate) {
     const dateStr = currentDate.toISOString().split("T")[0];
     const dayName = formatDateForLog(currentDate);
+
+    // New calendar day — discard stale appointment cache
+    if (dateStr !== lastProcessedDate) {
+      dayApptCache = new Map();
+      lastProcessedDate = dateStr;
+    }
 
     console.log(`\n--- Processing Date: ${dateStr} (${dayName}) ---`);
 
@@ -733,6 +782,9 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
         careReceiver,
         visit,
         currentDate,
+        null,
+        null,
+        dayApptCache,
       );
 
       if (!primaryCGResult.careGiver) {
@@ -758,6 +810,7 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
           currentDate,
           primaryCGResult.careGiver._id,
           scheduledTime,
+          dayApptCache,
         );
 
         if (!secondaryCGResult.careGiver) {
@@ -826,7 +879,7 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
           schedulingMetadata: {
             scheduledAt: new Date(),
             schedulingMethod: "automatic",
-            algorithmVersion: "3.1-alternative-timeslots",
+            algorithmVersion: "3.2-appointment-cache",
             preferredTime: visit.preferredTime,
             usedAlternativeTime: scheduledTime !== visit.preferredTime,
           },
@@ -840,6 +893,32 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
         const appointment = await Appointment.create(appointmentData);
 
         scheduled.push(appointment);
+
+        // ── Update day appointment cache ───────────────────────────────────
+        // Build a lean object matching the shape that isCareGiverAvailable
+        // reads from the cache (startTime, endTime, careReceiver.coordinates).
+        const cacheEntry = {
+          _id: appointment._id,
+          startTime: scheduledTime,
+          endTime,
+          status: "scheduled",
+          careReceiver: {
+            name: careReceiver.name,
+            coordinates: careReceiver.coordinates,
+          },
+        };
+
+        const addToCache = (cgId) => {
+          const key = cgId.toString();
+          const list = dayApptCache.get(key) || [];
+          list.push(cacheEntry);
+          list.sort((a, b) => a.startTime.localeCompare(b.startTime));
+          dayApptCache.set(key, list);
+        };
+
+        addToCache(primaryCGResult.careGiver._id);
+        if (secondaryCareGiver) addToCache(secondaryCareGiver._id);
+        // ─────────────────────────────────────────────────────────────────
 
         if (secondaryCareGiver) {
           console.log(
@@ -872,9 +951,11 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
 }
 
 /**
- * Bulk schedule for multiple care receivers
+ * Bulk schedule for multiple care receivers.
+ * Clears the availability cache at the start so each run works with fresh data.
  */
 async function bulkSchedule(careReceiverIds, startDate, endDate) {
+  _clearRunCaches();
   const results = [];
 
   for (const id of careReceiverIds) {

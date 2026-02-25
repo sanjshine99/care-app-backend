@@ -173,6 +173,15 @@ appointmentSchema.index({ date: 1, status: 1 });
 appointmentSchema.index({ careReceiver: 1, date: 1 });
 appointmentSchema.index({ status: 1, date: 1 }); // ← ADDED for validation queries
 
+// Compound indexes for the conflict-detection query in isCareGiverAvailable:
+//   $or: [{ careGiver }, { secondaryCareGiver }], date, status
+// Without these, MongoDB falls back to a collection scan for every check.
+appointmentSchema.index({ careGiver: 1, date: 1, status: 1 });
+appointmentSchema.index({ secondaryCareGiver: 1, date: 1, status: 1 });
+
+// Duplicate-detection query: careReceiver + date + visitNumber + status
+appointmentSchema.index({ careReceiver: 1, date: 1, visitNumber: 1, status: 1 });
+
 // Pre-save: Capture availability snapshot
 appointmentSchema.pre("save", async function (next) {
   if (this.isNew) {
