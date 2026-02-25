@@ -192,9 +192,16 @@ exports.getAllAppointments = async (req, res, next) => {
   }
 };
 
-// @desc    Get unscheduled appointments with detailed reasons
+// @desc    Get unscheduled appointments (fast — no per-slot analysis)
 // @route   GET /api/schedule/unscheduled
 // @access  Private
+//
+// Performance notes:
+//   - All care receivers and their appointments are fetched in exactly TWO bulk
+//     queries regardless of how many receivers or dates are in the range.
+//   - The deep scheduling analysis (findBestCareGiver per missing slot, ~100 DB
+//     queries per slot) has been removed from this endpoint.
+//     Use POST /api/schedule/analyze-unscheduled for per-slot "why" analysis.
 exports.getUnscheduled = async (req, res, next) => {
   console.log("\n========================================");
   console.log("🔵 GET /schedule/unscheduled CALLED");
@@ -216,42 +223,41 @@ exports.getUnscheduled = async (req, res, next) => {
     }
 
     const start = new Date(startDate);
+    start.setUTCHours(0, 0, 0, 0);
     const end = new Date(endDate);
+    end.setUTCHours(23, 59, 59, 999);
 
     console.log("📥 Calculating unscheduled appointments...");
 
-    // FRESH: Query all active care receivers
-    const careReceivers = await CareReceiver.find({ isActive: true }).lean();
+    // ── Two bulk queries fetch everything needed ──────────────────────────────
+    const [careReceivers, allAppointments] = await Promise.all([
+      CareReceiver.find({ isActive: true }).lean(),
+      Appointment.find({ date: { $gte: start, $lte: end } })
+        .select("careReceiver date visitNumber status")
+        .lean(),
+    ]);
+
+    // Index existing appointments for O(1) lookups
+    const appointmentIndex = new Set();
+    for (const apt of allAppointments) {
+      const dateStr = apt.date.toISOString().split("T")[0];
+      appointmentIndex.add(`${apt.careReceiver}_${dateStr}_${apt.visitNumber}`);
+    }
+
+    // Build date list once (shared across all care receivers)
+    const dates = [];
+    const cursor = new Date(start);
+    while (cursor <= end) {
+      dates.push(new Date(cursor));
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     const unscheduled = [];
 
     for (const cr of careReceivers) {
-      if (!cr.dailyVisits || cr.dailyVisits.length === 0) {
-        continue;
-      }
+      if (!cr.dailyVisits || cr.dailyVisits.length === 0) continue;
 
-      // Get all dates in range
-      const dates = [];
-      const currentDate = new Date(start);
-      while (currentDate <= end) {
-        dates.push(new Date(currentDate));
-        currentDate.setDate(currentDate.getDate() + 1);
-      }
-
-      // Get existing appointments
-      const existingAppointments = await Appointment.find({
-        careReceiver: cr._id,
-        date: { $gte: start, $lte: end },
-      }).lean();
-
-      // Build map of existing appointments by date and visit number
-      const appointmentMap = new Map();
-      existingAppointments.forEach((apt) => {
-        const dateKey = apt.date.toISOString().split("T")[0];
-        const visitKey = `${dateKey}-${apt.visitNumber}`;
-        appointmentMap.set(visitKey, apt);
-      });
-
-      // FIXED: Calculate expected appointments using isDateInSchedule
       let expectedCount = 0;
       const details = [];
 
@@ -259,41 +265,33 @@ exports.getUnscheduled = async (req, res, next) => {
         const dateStr = date.toISOString().split("T")[0];
 
         for (const visit of cr.dailyVisits) {
-          //  FIXED: Check if this date matches the visit's schedule
-          const shouldHaveAppointment = isDateInSchedule(
-            date,
-            visit,
-            cr.createdAt,
-          );
+          if (!isDateInSchedule(date, visit, cr.createdAt)) continue;
 
-          if (shouldHaveAppointment) {
-            expectedCount++; // Count this as an expected appointment
+          expectedCount++;
+          const key = `${cr._id}_${dateStr}_${visit.visitNumber}`;
 
-            const visitKey = `${dateStr}-${visit.visitNumber}`;
-
-            if (!appointmentMap.has(visitKey)) {
-              // This appointment should exist but doesn't - it's missing
-              const reason = await findSchedulingFailureReason(cr, visit, date);
-
-              details.push({
-                date: dateStr,
-                visitNumber: visit.visitNumber,
-                preferredTime: visit.preferredTime,
-                duration: visit.duration,
-                requirements: visit.requirements,
-                doubleHanded: visit.doubleHanded,
-                priority: visit.priority,
-                notes: visit.notes,
-                reason: reason,
-              });
-            }
+          if (!appointmentIndex.has(key)) {
+            details.push({
+              date: dateStr,
+              visitNumber: visit.visitNumber,
+              preferredTime: visit.preferredTime,
+              duration: visit.duration,
+              requirements: visit.requirements,
+              doubleHanded: visit.doubleHanded,
+              priority: visit.priority,
+              notes: visit.notes,
+              // For per-slot "why" analysis use POST /analyze-unscheduled
+              reason: null,
+            });
           }
-          // If shouldHaveAppointment is false, we skip this date entirely
-          // (it's not part of the schedule, so we don't count it as missing)
         }
       }
 
       if (details.length > 0) {
+        const actualCount = allAppointments.filter(
+          (a) => a.careReceiver.toString() === cr._id.toString(),
+        ).length;
+
         unscheduled.push({
           careReceiver: {
             id: cr._id,
@@ -303,10 +301,10 @@ exports.getUnscheduled = async (req, res, next) => {
             address: cr.address,
             coordinates: cr.coordinates,
           },
-          expected: expectedCount, //  FIXED: Use calculated count, not dates.length * visits.length
-          actual: existingAppointments.length,
+          expected: expectedCount,
+          actual: actualCount,
           missing: details.length,
-          details: details,
+          details,
         });
       }
     }
