@@ -139,6 +139,11 @@ const careReceiverSchema = new mongoose.Schema(
           default: null,
         },
 
+        recurrenceEndDate: {
+          type: Date,
+          default: null,
+        },
+
         requirements: {
           type: [String],
           required: true,

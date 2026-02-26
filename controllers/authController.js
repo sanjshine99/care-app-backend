@@ -29,64 +29,6 @@ const sendTokenResponse = (user, statusCode, res) => {
   });
 };
 
-// @desc    Register new admin user
-// @route   POST /api/auth/register
-// @access  Public (but should be restricted in production)
-exports.register = async (req, res, next) => {
-  try {
-    const { name, email, password, role } = req.body;
-
-    // Validate required fields
-    if (!name || !email || !password) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          message: 'Please provide name, email, and password',
-          code: 'MISSING_FIELDS',
-        },
-      });
-    }
-
-    // Check if user already exists
-    const existingUser = await AdminUser.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          message: 'User with this email already exists',
-          code: 'USER_EXISTS',
-        },
-      });
-    }
-
-    // Create user
-    const user = await AdminUser.create({
-      name,
-      email,
-      password,
-      role: role || 'admin',
-    });
-
-    // Create welcome notification
-    await Notification.create({
-      adminUser: user._id,
-      type: 'success',
-      priority: 'medium',
-      title: 'Welcome to Care Scheduling System',
-      message: `Welcome ${user.name}! Your account has been created successfully.`,
-      metadata: {
-        action: 'user_registered',
-        resourceType: 'AdminUser',
-        resourceId: user._id,
-      },
-    });
-
-    sendTokenResponse(user, 201, res);
-  } catch (error) {
-    next(error);
-  }
-};
-
 // @desc    Login user
 // @route   POST /api/auth/login
 // @access  Public

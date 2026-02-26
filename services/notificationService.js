@@ -212,6 +212,114 @@ exports.notifyCareReceiverAdded = async (
 };
 
 /**
+ * Create notification when recurring visits are added/updated (auto-scheduling in progress)
+ */
+exports.notifyRecurringVisitsAdded = async (userId, careReceiverName) => {
+  await Notification.create({
+    adminUser: userId,
+    type: "info",
+    priority: "medium",
+    title: "Recurring Visits Updated",
+    message: `Recurring visits added for ${careReceiverName}. Auto-scheduling in progress.`,
+    metadata: {
+      action: "recurring_visits_added",
+      resourceType: "carereceiver",
+      details: {
+        careReceiverName,
+      },
+    },
+    actionRequired: false,
+    actionUrl: "/carereceivers",
+    actionLabel: "View Care Receivers",
+  });
+};
+
+/**
+ * Create notification when schedule generation completes for a single care receiver
+ * Includes careReceiverId in metadata so frontend can match and show counts toast.
+ */
+exports.notifyScheduleGeneratedForCareReceiver = async (
+  userId,
+  careReceiverId,
+  careReceiverName,
+  scheduledCount,
+  failedCount
+) => {
+  let type = "success";
+  let priority = "medium";
+  let title = "Schedule Generated";
+  let message = `Schedule generated for ${careReceiverName}: ${scheduledCount} appointments assigned.`;
+
+  if (failedCount > 0) {
+    type = "warning";
+    priority = "high";
+    title = "Schedule Generated with Gaps";
+    message = `Schedule generated for ${careReceiverName}: ${scheduledCount} appointments assigned, ${failedCount} could not be assigned.`;
+  }
+
+  const isTotalFailure = scheduledCount === 0 && failedCount > 0;
+  if (isTotalFailure) {
+    type = "error";
+    priority = "critical";
+    title = "Schedule Generation Failed";
+    message = `Failed to assign appointments for ${careReceiverName}. ${failedCount} need attention.`;
+  }
+
+  await Notification.create({
+    adminUser: userId,
+    type,
+    priority,
+    title,
+    message,
+    metadata: {
+      action: isTotalFailure ? "schedule_generation_failed" : "schedule_generated",
+      resourceType: "schedule",
+      resourceId: careReceiverId,
+      count: scheduledCount,
+      details: {
+        careReceiverId: careReceiverId?.toString?.() || careReceiverId,
+        scheduled: scheduledCount,
+        failed: failedCount,
+      },
+    },
+    actionRequired: failedCount > 0,
+    actionUrl: failedCount > 0 ? "/schedule?tab=unscheduled" : "/schedule",
+    actionLabel: failedCount > 0 ? "View Unscheduled" : "View Schedule",
+  });
+};
+
+/**
+ * Create notification when auto-scheduling fails for a care receiver
+ */
+exports.notifyScheduleGenerationFailed = async (
+  userId,
+  careReceiverId,
+  careReceiverName,
+  errorMessage
+) => {
+  await Notification.create({
+    adminUser: userId,
+    type: "error",
+    priority: "critical",
+    title: "Auto-Scheduling Failed",
+    message: `Auto-scheduling failed for ${careReceiverName}: ${errorMessage}`,
+    metadata: {
+      action: "schedule_generation_failed",
+      resourceType: "carereceiver",
+      resourceId: careReceiverId,
+      details: {
+        careReceiverId: careReceiverId?.toString?.() || careReceiverId,
+        careReceiverName,
+        errorMessage,
+      },
+    },
+    actionRequired: true,
+    actionUrl: "/schedule",
+    actionLabel: "View Schedule",
+  });
+};
+
+/**
  * Create notification for care giver added
  */
 exports.notifyCareGiverAdded = async (userId, careGiverName, skillsCount) => {

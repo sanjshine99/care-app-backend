@@ -294,6 +294,7 @@ const updateCareGiver = async (req, res, next) => {
         const existing = await Availability.findOne({
           careGiver: careGiver._id,
           isActive: true,
+          effectiveTo: null,
         });
 
         if (existing) {

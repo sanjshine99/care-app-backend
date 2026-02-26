@@ -11,7 +11,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "init-db": "node scripts/initDatabase.js",
-    "seed": "node scripts/seedData.js"
+    "seed": "node seed.js",
+    "seed:clear": "node clearAll.js"
   },
   "keywords": [
     "care",
