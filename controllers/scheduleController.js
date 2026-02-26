@@ -218,9 +218,13 @@ exports.getUnscheduled = async (req, res, next) => {
     const start = new Date(startDate);
     const end = new Date(endDate);
 
+    const now = new Date();
+    const todayUTC = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+    );
+
     console.log("📥 Calculating unscheduled appointments...");
 
-    // FRESH: Query all active care receivers
     const careReceivers = await CareReceiver.find({ isActive: true }).lean();
     const unscheduled = [];
 
@@ -229,12 +233,38 @@ exports.getUnscheduled = async (req, res, next) => {
         continue;
       }
 
-      // Get all dates in range
+      const createdAtUTC = cr.createdAt
+        ? new Date(
+            Date.UTC(
+              new Date(cr.createdAt).getUTCFullYear(),
+              new Date(cr.createdAt).getUTCMonth(),
+              new Date(cr.createdAt).getUTCDate(),
+            ),
+          )
+        : todayUTC;
+      const updatedAtUTC = cr.updatedAt
+        ? new Date(
+            Date.UTC(
+              new Date(cr.updatedAt).getUTCFullYear(),
+              new Date(cr.updatedAt).getUTCMonth(),
+              new Date(cr.updatedAt).getUTCDate(),
+            ),
+          )
+        : createdAtUTC;
+      const effectiveStart = new Date(
+        Math.max(
+          start.getTime(),
+          createdAtUTC.getTime(),
+          updatedAtUTC.getTime(),
+          todayUTC.getTime(),
+        ),
+      );
+
       const dates = [];
-      const currentDate = new Date(start);
+      const currentDate = new Date(effectiveStart);
       while (currentDate <= end) {
         dates.push(new Date(currentDate));
-        currentDate.setDate(currentDate.getDate() + 1);
+        currentDate.setUTCDate(currentDate.getUTCDate() + 1);
       }
 
       // Get existing appointments
@@ -264,6 +294,7 @@ exports.getUnscheduled = async (req, res, next) => {
             date,
             visit,
             cr.createdAt,
+            cr.updatedAt,
           );
 
           if (shouldHaveAppointment) {

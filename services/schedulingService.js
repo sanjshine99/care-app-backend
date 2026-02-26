@@ -75,8 +75,12 @@ function calculateDistance(coords1, coords2) {
  * @param {Date} careReceiverCreatedAt - When care receiver was created (for recurrence start)
  * @returns {boolean} - True if visit should occur on this date
  */
-function isDateInSchedule(checkDate, visit, careReceiverCreatedAt) {
-  // Get day of week using UTC (0=Sunday, 1=Monday, ..., 6=Saturday)
+function isDateInSchedule(
+  checkDate,
+  visit,
+  careReceiverCreatedAt,
+  careReceiverUpdatedAt,
+) {
   const utcDay = checkDate.getUTCDay();
   const dayNames = [
     "Sunday",
@@ -89,30 +93,74 @@ function isDateInSchedule(checkDate, visit, careReceiverCreatedAt) {
   ];
   const dayOfWeek = dayNames[utcDay];
 
-  // Check if visit has daysOfWeek defined
   if (!visit.daysOfWeek || visit.daysOfWeek.length === 0) {
     console.log(
       `  Warning: No daysOfWeek defined for visit ${visit.visitNumber}, defaulting to all days`,
     );
-    // If no daysOfWeek specified, default to all 7 days
     visit.daysOfWeek = dayNames;
   }
 
-  // First check: Is this day of week in the allowed days?
   if (!visit.daysOfWeek.includes(dayOfWeek)) {
-    return false; // Not in allowed days
+    return false;
+  }
+
+  const checkUTC = Date.UTC(
+    checkDate.getUTCFullYear(),
+    checkDate.getUTCMonth(),
+    checkDate.getUTCDate(),
+  );
+
+  const createdUTC = careReceiverCreatedAt
+    ? Date.UTC(
+        new Date(careReceiverCreatedAt).getUTCFullYear(),
+        new Date(careReceiverCreatedAt).getUTCMonth(),
+        new Date(careReceiverCreatedAt).getUTCDate(),
+      )
+    : 0;
+  const updatedUTC = careReceiverUpdatedAt
+    ? Date.UTC(
+        new Date(careReceiverUpdatedAt).getUTCFullYear(),
+        new Date(careReceiverUpdatedAt).getUTCMonth(),
+        new Date(careReceiverUpdatedAt).getUTCDate(),
+      )
+    : 0;
+  const receiverEffectiveStartUTC = Math.max(createdUTC, updatedUTC);
+
+  const effectiveStart = visit.recurrenceStartDate
+    ? new Date(visit.recurrenceStartDate)
+    : receiverEffectiveStartUTC
+      ? new Date(receiverEffectiveStartUTC)
+      : new Date();
+  const startUTC = Date.UTC(
+    effectiveStart.getUTCFullYear(),
+    effectiveStart.getUTCMonth(),
+    effectiveStart.getUTCDate(),
+  );
+  if (checkUTC < startUTC) {
+    return false;
+  }
+
+  if (visit.recurrenceEndDate) {
+    const endDate = new Date(visit.recurrenceEndDate);
+    const endUTC = Date.UTC(
+      endDate.getUTCFullYear(),
+      endDate.getUTCMonth(),
+      endDate.getUTCDate(),
+    );
+    if (checkUTC > endUTC) {
+      return false;
+    }
   }
 
   // Get recurrence pattern (default to weekly)
   const recurrencePattern = visit.recurrencePattern || "weekly";
   const recurrenceInterval = visit.recurrenceInterval || 1;
 
-  // Weekly pattern - day is already validated above
+  // Weekly pattern - day is already validated above, and we're on or after start
   if (recurrencePattern === "weekly" && recurrenceInterval === 1) {
-    return true; // Day matches, and it's weekly
+    return true;
   }
 
-  // For biweekly, monthly, or custom intervals, we need a start date
   if (
     recurrencePattern === "biweekly" ||
     recurrencePattern === "monthly" ||
@@ -120,8 +168,8 @@ function isDateInSchedule(checkDate, visit, careReceiverCreatedAt) {
   ) {
     const startDate = visit.recurrenceStartDate
       ? new Date(visit.recurrenceStartDate)
-      : careReceiverCreatedAt
-        ? new Date(careReceiverCreatedAt)
+      : receiverEffectiveStartUTC
+        ? new Date(receiverEffectiveStartUTC)
         : new Date();
 
     // Normalize both dates to UTC midnight for accurate comparison
@@ -466,6 +514,19 @@ async function findBestCareGiver(
   }
   // For non-double-handed visits, all care givers are eligible (including singleHandedOnly=true)
 
+  // Guard: care receiver must have valid coordinates for $near query
+  if (
+    !careReceiver.coordinates ||
+    !careReceiver.coordinates.coordinates ||
+    careReceiver.coordinates.coordinates.length < 2
+  ) {
+    return {
+      careGiver: null,
+      reason:
+        "Care receiver has no valid location coordinates — re-save their address to geocode it",
+    };
+  }
+
   query.coordinates = {
     $near: {
       $geometry: {
@@ -482,9 +543,27 @@ async function findBestCareGiver(
   );
 
   if (potentialCareGivers.length === 0) {
+    // Determine if the problem is missing skills/gender/active or purely distance
+    const skillsOnlyQuery = {
+      isActive: true,
+      skills: { $all: visit.requirements },
+    };
+    if (excludeCareGiverId) skillsOnlyQuery._id = { $ne: excludeCareGiverId };
+    if (careReceiver.genderPreference !== "No Preference") {
+      skillsOnlyQuery.gender = careReceiver.genderPreference;
+    }
+    if (visit.doubleHanded) skillsOnlyQuery.singleHandedOnly = false;
+    const anyWithSkills = await CareGiver.countDocuments(skillsOnlyQuery);
+
+    if (anyWithSkills === 0) {
+      return {
+        careGiver: null,
+        reason: `No active care givers have all required skills: [${visit.requirements.join(", ")}]`,
+      };
+    }
     return {
       careGiver: null,
-      reason: `No care givers with required skills within ${maxDistanceKm}km`,
+      reason: `${anyWithSkills} care giver(s) have the required skills but none are within ${maxDistanceKm}km of this care receiver`,
     };
   }
 
@@ -612,8 +691,38 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
   const scheduled = [];
   const failed = [];
 
-  // Create a copy of startDate to avoid mutation
-  const currentDate = new Date(startDate.getTime());
+  const now = new Date();
+  const todayUTC = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  );
+  const createdAtUTC = careReceiver.createdAt
+    ? new Date(
+        Date.UTC(
+          careReceiver.createdAt.getUTCFullYear(),
+          careReceiver.createdAt.getUTCMonth(),
+          careReceiver.createdAt.getUTCDate(),
+        ),
+      )
+    : todayUTC;
+  const updatedAtUTC = careReceiver.updatedAt
+    ? new Date(
+        Date.UTC(
+          careReceiver.updatedAt.getUTCFullYear(),
+          careReceiver.updatedAt.getUTCMonth(),
+          careReceiver.updatedAt.getUTCDate(),
+        ),
+      )
+    : createdAtUTC;
+  const effectiveStart = new Date(
+    Math.max(
+      startDate.getTime(),
+      createdAtUTC.getTime(),
+      updatedAtUTC.getTime(),
+      todayUTC.getTime(),
+    ),
+  );
+
+  const currentDate = new Date(effectiveStart.getTime());
 
   while (currentDate <= endDate) {
     const dateStr = currentDate.toISOString().split("T")[0];
@@ -622,8 +731,12 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
     console.log(`\n--- Processing Date: ${dateStr} (${dayName}) ---`);
 
     for (const visit of careReceiver.dailyVisits) {
-      // FIXED: Use isDateInSchedule() instead of shouldVisitOccur()
-      if (!isDateInSchedule(currentDate, visit, careReceiver.createdAt)) {
+      if (!isDateInSchedule(
+        currentDate,
+        visit,
+        careReceiver.createdAt,
+        careReceiver.updatedAt,
+      )) {
         const visitDays = visit.daysOfWeek
           ? visit.daysOfWeek.join("/")
           : "all days";

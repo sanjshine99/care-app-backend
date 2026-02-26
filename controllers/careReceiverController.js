@@ -3,6 +3,65 @@
 
 const CareReceiver = require("../models/CareReceiver");
 const { geocodeAddress } = require("../services/mapboxService");
+const { scheduleForCareReceiver } = require("../services/schedulingService");
+const {
+  notifyRecurringVisitsAdded,
+  notifyScheduleGeneratedForCareReceiver,
+  notifyScheduleGenerationFailed,
+} = require("../services/notificationService");
+
+const AUTO_SCHEDULE_MONTHS = 3;
+const SCHEDULE_RUN_DEBOUNCE_MS = 15000;
+
+const lastScheduleRunByCareReceiver = new Map();
+
+async function runBackgroundSchedule(
+  careReceiverId,
+  adminUserId,
+  careReceiverName
+) {
+  const idStr = careReceiverId?.toString?.() || String(careReceiverId);
+  const lastRun = lastScheduleRunByCareReceiver.get(idStr);
+  if (lastRun && Date.now() - lastRun < SCHEDULE_RUN_DEBOUNCE_MS) {
+    console.log(
+      " Skipping duplicate schedule run for same care receiver (debounce)"
+    );
+    return;
+  }
+  lastScheduleRunByCareReceiver.set(idStr, Date.now());
+
+  const now = new Date();
+  const todayStart = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  );
+  const endDate = new Date(todayStart);
+  endDate.setUTCMonth(endDate.getUTCMonth() + AUTO_SCHEDULE_MONTHS);
+  try {
+    const { scheduled, failed } = await scheduleForCareReceiver(
+      careReceiverId,
+      todayStart,
+      endDate
+    );
+    console.log(
+      ` Auto-scheduled appointments for ${todayStart.toISOString().split("T")[0]} to ${endDate.toISOString().split("T")[0]}`
+    );
+    await notifyScheduleGeneratedForCareReceiver(
+      adminUserId,
+      careReceiverId,
+      careReceiverName,
+      scheduled.length,
+      failed.length
+    );
+  } catch (scheduleErr) {
+    console.error(" Auto-schedule failed:", scheduleErr.message);
+    await notifyScheduleGenerationFailed(
+      adminUserId,
+      careReceiverId,
+      careReceiverName,
+      scheduleErr.message
+    );
+  }
+}
 
 // @desc    Get all care receivers
 // @route   GET /api/carereceivers
@@ -183,11 +242,35 @@ exports.createCareReceiver = async (req, res, next) => {
     // Populate preferred care giver if exists
     await careReceiver.populate("preferredCareGiver", "name email");
 
-    res.status(201).json({
-      success: true,
-      data: { careReceiver },
-      message: "Care receiver created successfully",
-    });
+    const hasRecurringVisits =
+      careReceiver.dailyVisits && careReceiver.dailyVisits.length > 0;
+    if (hasRecurringVisits) {
+      await notifyRecurringVisitsAdded(req.user._id, careReceiver.name);
+      res.status(201).json({
+        success: true,
+        data: { careReceiver },
+        message: "Care receiver created successfully",
+        scheduleGenerationQueued: true,
+      });
+      const adminUserId = req.user._id;
+      const careReceiverId = careReceiver._id;
+      const careReceiverName = careReceiver.name;
+      setImmediate(() => {
+        runBackgroundSchedule(
+          careReceiverId,
+          adminUserId,
+          careReceiverName,
+        ).catch((err) =>
+          console.error(" Background schedule error:", err.message)
+        );
+      });
+    } else {
+      res.status(201).json({
+        success: true,
+        data: { careReceiver },
+        message: "Care receiver created successfully",
+      });
+    }
   } catch (error) {
     console.error(" CREATE ERROR:", error);
 
@@ -271,16 +354,27 @@ exports.updateCareReceiver = async (req, res, next) => {
       }
     }
 
-    // Detect if daily visits schedule changed (days of week changed)
-    const oldVisitDays = (careReceiver.dailyVisits || []).map((v) =>
-      JSON.stringify((v.daysOfWeek || []).sort())
-    );
-    const newVisitDays = (req.body.dailyVisits || []).map((v) =>
-      JSON.stringify((v.daysOfWeek || []).sort())
-    );
-    const scheduleChanged =
-      req.body.dailyVisits &&
-      JSON.stringify(oldVisitDays) !== JSON.stringify(newVisitDays);
+    // Only mark appointments for reassignment when an *existing* visit's schedule changed.
+    // Adding new visits should not invalidate existing appointments.
+    const oldVisits = careReceiver.dailyVisits || [];
+    const newVisits = req.body.dailyVisits || [];
+    const oldById = new Map(oldVisits.map((v) => [String(v._id), v]));
+    let scheduleChanged = false;
+    for (const newV of newVisits) {
+      const id = newV._id && String(newV._id);
+      if (!id || !oldById.has(id)) continue;
+      const oldV = oldById.get(id);
+      const oldDays = (oldV.daysOfWeek || []).slice().sort();
+      const newDays = (newV.daysOfWeek || []).slice().sort();
+      if (
+        JSON.stringify(oldDays) !== JSON.stringify(newDays) ||
+        oldV.preferredTime !== newV.preferredTime ||
+        oldV.duration !== newV.duration
+      ) {
+        scheduleChanged = true;
+        break;
+      }
+    }
 
     // Update
     careReceiver = await CareReceiver.findByIdAndUpdate(
@@ -319,11 +413,35 @@ exports.updateCareReceiver = async (req, res, next) => {
       );
     }
 
-    res.json({
-      success: true,
-      data: { careReceiver },
-      message: "Care receiver updated successfully",
-    });
+    const hasRecurringVisits =
+      req.body.dailyVisits && req.body.dailyVisits.length > 0;
+    if (hasRecurringVisits) {
+      await notifyRecurringVisitsAdded(req.user._id, careReceiver.name);
+      res.json({
+        success: true,
+        data: { careReceiver },
+        message: "Care receiver updated successfully",
+        scheduleGenerationQueued: true,
+      });
+      const adminUserId = req.user._id;
+      const careReceiverId = careReceiver._id;
+      const careReceiverName = careReceiver.name;
+      setImmediate(() => {
+        runBackgroundSchedule(
+          careReceiverId,
+          adminUserId,
+          careReceiverName,
+        ).catch((err) =>
+          console.error(" Background schedule error:", err.message)
+        );
+      });
+    } else {
+      res.json({
+        success: true,
+        data: { careReceiver },
+        message: "Care receiver updated successfully",
+      });
+    }
   } catch (error) {
     console.error(" UPDATE ERROR:", error);
 

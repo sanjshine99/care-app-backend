@@ -17,6 +17,7 @@ const scheduleRoutes = require("./routes/schedule.routes");
 const notificationRoutes = require("./routes/notification.routes");
 const settingsRoutes = require("./routes/settings.routes");
 const mapRoutes = require("./routes/map.routes");
+const usersRoutes = require("./routes/users.routes");
 
 const app = express();
 const server = http.createServer(app);
@@ -26,6 +27,7 @@ const server = http.createServer(app);
 // ========================================
 const allowedOrigins = [
   "http://localhost:3000",
+  "http://localhost:4000",
   "http://localhost:5173",
   "http://localhost:5174",
   // Add your Render frontend URL here when deployed:
@@ -136,6 +138,7 @@ app.use("/api/schedule", scheduleRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/map", mapRoutes);
+app.use("/api/users", usersRoutes);
 app.use("/api/diagnostic", require("./routes/diagnostic.routes"));
 
 // ========================================
