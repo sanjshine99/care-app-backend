@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { normalizeTimeToHHMM } = require("../utils/timeUtils");
 
 const careReceiverSchema = new mongoose.Schema(
   {
@@ -246,7 +247,7 @@ careReceiverSchema.index({ preferredCareGiver: 1 });
 careReceiverSchema.index({ "dailyVisits.doubleHanded": 1 });
 careReceiverSchema.index({ "dailyVisits.daysOfWeek": 1 }); // NEW: Index for day queries
 
-// Pre-save middleware to generate full address
+// Pre-save middleware to generate full address and normalize times
 careReceiverSchema.pre("save", function (next) {
   if (
     this.address &&
@@ -257,8 +258,12 @@ careReceiverSchema.pre("save", function (next) {
     this.address.full = `${this.address.street}, ${this.address.city} ${this.address.postcode}, United Kingdom`;
   }
 
-  // Sort daily visits by visit number
   if (this.dailyVisits && this.dailyVisits.length > 0) {
+    this.dailyVisits.forEach((visit) => {
+      if (visit.preferredTime) {
+        visit.preferredTime = normalizeTimeToHHMM(visit.preferredTime);
+      }
+    });
     this.dailyVisits.sort((a, b) => a.visitNumber - b.visitNumber);
   }
 

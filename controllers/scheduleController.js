@@ -12,6 +12,7 @@ const {
   isDateInSchedule,
 } = require("../services/schedulingService");
 const notificationService = require("../services/notificationService");
+const { normalizeTimeToHHMM } = require("../utils/timeUtils");
 
 // =============================================================================
 // SCHEDULE GENERATION (POST ONLY)
@@ -1107,14 +1108,16 @@ exports.createManualAppointment = async (req, res, next) => {
       });
     }
 
-    // Create appointment
+    const normalizedStartTime = normalizeTimeToHHMM(startTime);
+    const normalizedEndTime = normalizeTimeToHHMM(endTime);
+
     const appointment = await Appointment.create({
       careReceiver: careReceiverId,
       careGiver: careGiverId,
       secondaryCareGiver: secondaryCareGiverId || undefined,
       date: new Date(date),
-      startTime,
-      endTime,
+      startTime: normalizedStartTime,
+      endTime: normalizedEndTime,
       duration: duration || 60,
       visitNumber: visitNumber || 1,
       requirements: requirements || [],

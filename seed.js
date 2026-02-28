@@ -1,6 +1,6 @@
 // care-app-backend/seed.js
-// Sample data with real names and realistic UK details. 2 admin users, 6 care givers, 16 care receivers (no visits).
-// Run: node seed.js  or  npm run seed
+// Sample data: Milton Keynes (MK) only. 2 admin users, 6 care givers, 16 care receivers (no visits).
+// All addresses use real MK postcodes and locations. Run: node seed.js  or  npm run seed
 
 require("dotenv").config();
 const mongoose = require("mongoose");
@@ -27,8 +27,8 @@ const CAREGIVERS = [
     phone: "07700 900011",
     dateOfBirth: new Date("1987-04-22"),
     gender: "Female",
-    address: { street: "14 Whitehall Place", city: "London", postcode: "SW1A 2DH" },
-    coordinates: { type: "Point", coordinates: [-0.1246, 51.5068] },
+    address: { street: "14 Midsummer Boulevard", city: "Milton Keynes", postcode: "MK9 2EB" },
+    coordinates: { type: "Point", coordinates: [-0.718, 52.048] },
     skills: ["personal_care", "medication_management", "meal_preparation", "companionship"],
     canDrive: true,
     singleHandedOnly: false,
@@ -50,8 +50,8 @@ const CAREGIVERS = [
     phone: "07700 900022",
     dateOfBirth: new Date("1984-09-15"),
     gender: "Male",
-    address: { street: "32 Kings Road", city: "London", postcode: "SW3 4UD" },
-    coordinates: { type: "Point", coordinates: [-0.1657, 51.4875] },
+    address: { street: "32 Portway", city: "Milton Keynes", postcode: "MK2 2DE" },
+    coordinates: { type: "Point", coordinates: [-0.735, 52.038] },
     skills: ["personal_care", "mobility_assistance", "medication_management", "specialized_medical"],
     canDrive: true,
     singleHandedOnly: false,
@@ -75,8 +75,8 @@ const CAREGIVERS = [
     phone: "07700 900033",
     dateOfBirth: new Date("1991-01-30"),
     gender: "Female",
-    address: { street: "7 Wardour Street", city: "London", postcode: "W1D 6PF" },
-    coordinates: { type: "Point", coordinates: [-0.1316, 51.5138] },
+    address: { street: "7 Silbury Boulevard", city: "Milton Keynes", postcode: "MK1 1AH" },
+    coordinates: { type: "Point", coordinates: [-0.755, 52.041] },
     skills: ["personal_care", "dementia_care", "companionship", "household_tasks", "meal_preparation"],
     canDrive: false,
     singleHandedOnly: false,
@@ -98,8 +98,8 @@ const CAREGIVERS = [
     phone: "07700 900044",
     dateOfBirth: new Date("1982-07-08"),
     gender: "Male",
-    address: { street: "45 Deansgate", city: "Manchester", postcode: "M3 2BW" },
-    coordinates: { type: "Point", coordinates: [-2.2426, 53.4808] },
+    address: { street: "45 Queensway", city: "Milton Keynes", postcode: "MK3 6AA" },
+    coordinates: { type: "Point", coordinates: [-0.768, 52.032] },
     skills: ["mobility_assistance", "meal_preparation", "companionship", "household_tasks"],
     canDrive: true,
     singleHandedOnly: false,
@@ -121,8 +121,8 @@ const CAREGIVERS = [
     phone: "07700 900055",
     dateOfBirth: new Date("1993-11-12"),
     gender: "Female",
-    address: { street: "12 New Street", city: "Birmingham", postcode: "B2 4QA" },
-    coordinates: { type: "Point", coordinates: [-1.8986, 52.4862] },
+    address: { street: "12 Avebury Boulevard", city: "Milton Keynes", postcode: "MK4 4AX" },
+    coordinates: { type: "Point", coordinates: [-0.748, 52.022] },
     skills: ["personal_care", "medication_management", "companionship", "household_tasks"],
     canDrive: false,
     singleHandedOnly: false,
@@ -144,8 +144,8 @@ const CAREGIVERS = [
     phone: "07700 900066",
     dateOfBirth: new Date("1979-03-25"),
     gender: "Male",
-    address: { street: "88 Briggate", city: "Leeds", postcode: "LS1 6LZ" },
-    coordinates: { type: "Point", coordinates: [-1.5491, 53.7960] },
+    address: { street: "88 Church Street", city: "Milton Keynes", postcode: "MK11 3EG" },
+    coordinates: { type: "Point", coordinates: [-0.848, 52.045] },
     skills: ["personal_care", "dementia_care", "mobility_assistance", "meal_preparation", "specialized_medical"],
     canDrive: true,
     singleHandedOnly: false,
@@ -166,43 +166,43 @@ const CAREGIVERS = [
   },
 ];
 
-// First 6 = same postcodes as care givers (at least one care receiver per care giver postcode). Rest = valid UK postcodes.
+// All Milton Keynes (MK). First 6 match care giver postcodes; rest are real MK areas.
 const RECEIVER_POSTCODES = [
-  { city: "London", postcode: "SW1A 2DH", coords: [-0.1246, 51.5068] },
-  { city: "London", postcode: "SW3 4UD", coords: [-0.1657, 51.4875] },
-  { city: "London", postcode: "W1D 6PF", coords: [-0.1316, 51.5138] },
-  { city: "Manchester", postcode: "M3 2BW", coords: [-2.2426, 53.4808] },
-  { city: "Birmingham", postcode: "B2 4QA", coords: [-1.8986, 52.4862] },
-  { city: "Leeds", postcode: "LS1 6LZ", coords: [-1.5491, 53.7960] },
-  { city: "London", postcode: "SW1A 1AA", coords: [-0.1416, 51.5014] },
-  { city: "London", postcode: "EC1A 1BB", coords: [-0.0986, 51.5145] },
-  { city: "Manchester", postcode: "M1 1AE", coords: [-2.2426, 53.4808] },
-  { city: "Liverpool", postcode: "L1 1JQ", coords: [-2.9916, 53.4084] },
-  { city: "Bristol", postcode: "BS1 5TR", coords: [-2.5879, 51.4545] },
-  { city: "Sheffield", postcode: "S1 1WB", coords: [-1.4701, 53.3811] },
-  { city: "Edinburgh", postcode: "EH1 1YZ", coords: [-3.1883, 55.9533] },
-  { city: "Glasgow", postcode: "G1 1AA", coords: [-4.2518, 55.8642] },
-  { city: "Newcastle", postcode: "NE1 4ST", coords: [-1.6178, 54.9783] },
-  { city: "Cardiff", postcode: "CF10 1AL", coords: [-3.1791, 51.4816] },
+  { city: "Milton Keynes", postcode: "MK9 2EB", coords: [-0.718, 52.048] },
+  { city: "Milton Keynes", postcode: "MK2 2DE", coords: [-0.735, 52.038] },
+  { city: "Milton Keynes", postcode: "MK1 1AH", coords: [-0.755, 52.041] },
+  { city: "Milton Keynes", postcode: "MK3 6AA", coords: [-0.768, 52.032] },
+  { city: "Milton Keynes", postcode: "MK4 4AX", coords: [-0.748, 52.022] },
+  { city: "Milton Keynes", postcode: "MK11 3EG", coords: [-0.848, 52.045] },
+  { city: "Milton Keynes", postcode: "MK5 8LD", coords: [-0.728, 52.028] },
+  { city: "Milton Keynes", postcode: "MK6 3NN", coords: [-0.738, 52.035] },
+  { city: "Milton Keynes", postcode: "MK7 7HH", coords: [-0.688, 52.025] },
+  { city: "Milton Keynes", postcode: "MK8 0AA", coords: [-0.808, 52.042] },
+  { city: "Milton Keynes", postcode: "MK10 9BB", coords: [-0.698, 52.030] },
+  { city: "Milton Keynes", postcode: "MK12 5LH", coords: [-0.808, 52.055] },
+  { city: "Milton Keynes", postcode: "MK13 7PL", coords: [-0.778, 52.015] },
+  { city: "Milton Keynes", postcode: "MK14 6AN", coords: [-0.768, 52.058] },
+  { city: "Milton Keynes", postcode: "MK15 8BJ", coords: [-0.738, 52.062] },
+  { city: "Milton Keynes", postcode: "MK16 0AB", coords: [-0.722, 52.068] },
 ];
 
 const CARE_RECEIVERS = [
-  { name: "Margaret Fletcher", street: "22 Park Lane", contactName: "Thomas Fletcher", relationship: "Child", gender: "Female", genderPreference: "No Preference" },
-  { name: "William Booth", street: "5 Chelsea Gardens", contactName: "Helen Booth", relationship: "Spouse/Partner", gender: "Male", genderPreference: "No Preference" },
-  { name: "Dorothy Hayes", street: "41 Soho Square", contactName: "Rachel Hayes", relationship: "Child", gender: "Female", genderPreference: "Female" },
-  { name: "Arthur Greenwood", street: "18 Deansgate Court", contactName: "Peter Greenwood", relationship: "Child", gender: "Male", genderPreference: "Male" },
-  { name: "Jean Palmer", street: "9 Digbeth High Street", contactName: "Susan Palmer", relationship: "Child", gender: "Female", genderPreference: "No Preference" },
-  { name: "Harold Webb", street: "3 The Headrow", contactName: "David Webb", relationship: "Child", gender: "Male", genderPreference: "No Preference" },
-  { name: "Irene Collins", street: "7 Victoria Street", contactName: "Michael Collins", relationship: "Child", gender: "Female", genderPreference: "Female" },
-  { name: "Raymond Hughes", street: "15 St Mary's Gate", contactName: "Sarah Hughes", relationship: "Child", gender: "Male", genderPreference: "No Preference" },
-  { name: "Florence Bennett", street: "2 Castle Street", contactName: "Andrew Bennett", relationship: "Child", gender: "Female", genderPreference: "No Preference" },
-  { name: "Stanley Powell", street: "56 West Street", contactName: "Linda Powell", relationship: "Spouse/Partner", gender: "Male", genderPreference: "Male" },
-  { name: "Edith Russell", street: "11 Princes Street", contactName: "James Russell", relationship: "Child", gender: "Female", genderPreference: "No Preference" },
-  { name: "Albert Stewart", street: "24 Buchanan Street", contactName: "Patricia Stewart", relationship: "Child", gender: "Male", genderPreference: "No Preference" },
-  { name: "Gladys Mason", street: "8 Grey Street", contactName: "Christopher Mason", relationship: "Child", gender: "Female", genderPreference: "Female" },
-  { name: "Norman Hunt", street: "19 Queen Street", contactName: "Jennifer Hunt", relationship: "Child", gender: "Male", genderPreference: "No Preference" },
-  { name: "Marjorie Gardner", street: "4 St Mary Street", contactName: "Robert Gardner", relationship: "Child", gender: "Female", genderPreference: "No Preference" },
-  { name: "Herbert Reynolds", street: "31 Churchill Way", contactName: "Elizabeth Reynolds", relationship: "Spouse/Partner", gender: "Male", genderPreference: "No Preference" },
+  { name: "Margaret Fletcher", street: "22 Saxon Gate", contactName: "Thomas Fletcher", relationship: "Child", gender: "Female", genderPreference: "No Preference" },
+  { name: "William Booth", street: "5 Witan Gate", contactName: "Helen Booth", relationship: "Spouse/Partner", gender: "Male", genderPreference: "No Preference" },
+  { name: "Dorothy Hayes", street: "41 Elder Gate", contactName: "Rachel Hayes", relationship: "Child", gender: "Female", genderPreference: "Female" },
+  { name: "Arthur Greenwood", street: "18 Victoria Street", contactName: "Peter Greenwood", relationship: "Child", gender: "Male", genderPreference: "Male" },
+  { name: "Jean Palmer", street: "9 Stratford Road", contactName: "Susan Palmer", relationship: "Child", gender: "Female", genderPreference: "No Preference" },
+  { name: "Harold Webb", street: "3 Church Street", contactName: "David Webb", relationship: "Child", gender: "Male", genderPreference: "No Preference" },
+  { name: "Irene Collins", street: "7 Grafton Street", contactName: "Michael Collins", relationship: "Child", gender: "Female", genderPreference: "Female" },
+  { name: "Raymond Hughes", street: "15 Willen Road", contactName: "Sarah Hughes", relationship: "Child", gender: "Male", genderPreference: "No Preference" },
+  { name: "Florence Bennett", street: "2 Burchard Crescent", contactName: "Andrew Bennett", relationship: "Child", gender: "Female", genderPreference: "No Preference" },
+  { name: "Stanley Powell", street: "56 Watling Street", contactName: "Linda Powell", relationship: "Spouse/Partner", gender: "Male", genderPreference: "Male" },
+  { name: "Edith Russell", street: "11 High Street", contactName: "James Russell", relationship: "Child", gender: "Female", genderPreference: "No Preference" },
+  { name: "Albert Stewart", street: "24 Bradwell Road", contactName: "Patricia Stewart", relationship: "Child", gender: "Male", genderPreference: "No Preference" },
+  { name: "Gladys Mason", street: "8 Heelands", contactName: "Christopher Mason", relationship: "Child", gender: "Female", genderPreference: "Female" },
+  { name: "Norman Hunt", street: "19 Great Linford Lane", contactName: "Jennifer Hunt", relationship: "Child", gender: "Male", genderPreference: "No Preference" },
+  { name: "Marjorie Gardner", street: "4 Newport Road", contactName: "Robert Gardner", relationship: "Child", gender: "Female", genderPreference: "No Preference" },
+  { name: "Herbert Reynolds", street: "31 Tongwell Street", contactName: "Elizabeth Reynolds", relationship: "Spouse/Partner", gender: "Male", genderPreference: "No Preference" },
 ];
 
 function buildCareReceiver(cr, index, postcodeInfo) {
@@ -288,8 +288,8 @@ async function runSeed() {
     console.log("  Sarah Mitchell: email = sarah.mitchell@carehome.co.uk   password = " + ADMIN_PASSWORD_1);
     console.log("  James Wilson:   email = james.wilson@carehome.co.uk     password = " + ADMIN_PASSWORD_2);
     console.log("\nCare givers: 6 (with availability: 9–5 weekdays, 8–6 full week, morning, evening, split, + time off)");
-    console.log(`Care receivers: ${createdCareReceivers.length} (no daily/recurring visits; first 6 match care giver postcodes)`);
-    console.log("Valid UK postcodes used: SW1A 2DH, SW3 4UD, W1D 6PF, M3 2BW, B2 4QA, LS1 6LZ, SW1A 1AA, EC1A 1BB, M1 1AE, L1 1JQ, BS1 5TR, S1 1WB, EH1 1YZ, G1 1AA, NE1 4ST, CF10 1AL.");
+    console.log(`Care receivers: ${createdCareReceivers.length} (no daily/recurring visits; first 6 match care giver MK postcodes)`);
+    console.log("All addresses in Milton Keynes (MK). Postcodes: MK1–MK16 (real MK areas).");
     console.log("");
   } catch (error) {
     console.error("Seed error:", error);
