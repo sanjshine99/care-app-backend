@@ -9,6 +9,7 @@ const {
   findCareGiversNearby,
   getRoute,
   getTodayAppointments,
+  regeocodeAllCareGivers,
 } = require("../controllers/mapController");
 
 const router = express.Router();
@@ -24,5 +25,8 @@ router.get("/today-appointments", getTodayAppointments); // GET /api/map/today-a
 router.post("/distance", calculateDistance); // POST /api/map/distance
 router.post("/care-givers-nearby", findCareGiversNearby); // POST /api/map/care-givers-nearby
 router.post("/route", getRoute); // POST /api/map/route
+
+// One-time admin fix: re-geocode caregivers that have default London coordinates
+router.post("/regeocode-caregivers", regeocodeAllCareGivers); // POST /api/map/regeocode-caregivers
 
 module.exports = router;

@@ -121,11 +121,14 @@ const createCareGiver = async (req, res, next) => {
       const fullAddress = `${address.street}, ${address.city} ${address.postcode}`;
       req.body.address.full = fullAddress;
 
-      if (geocodeAddress && process.env.MAPBOX_ACCESS_TOKEN) {
+      if (geocodeAddress && process.env.MAPBOX_API_KEY) {
         try {
           console.log("🗺️ Geocoding:", fullAddress);
           const coordinates = await geocodeAddress(fullAddress);
-          req.body.coordinates = coordinates;
+          req.body.coordinates = {
+            type: "Point",
+            coordinates: [coordinates.longitude, coordinates.latitude],
+          };
           console.log(" Geocoded successfully");
         } catch (geoError) {
           console.log(" Geocoding failed:", geoError.message);
@@ -264,10 +267,13 @@ const updateCareGiver = async (req, res, next) => {
       const fullAddress = `${address.street}, ${address.city} ${address.postcode}`;
       req.body.address.full = fullAddress;
 
-      if (geocodeAddress && process.env.MAPBOX_ACCESS_TOKEN) {
+      if (geocodeAddress && process.env.MAPBOX_API_KEY) {
         try {
           const coordinates = await geocodeAddress(fullAddress);
-          req.body.coordinates = coordinates;
+          req.body.coordinates = {
+            type: "Point",
+            coordinates: [coordinates.longitude, coordinates.latitude],
+          };
         } catch (geoError) {
           console.log("Geocoding failed, using default coordinates");
           req.body.coordinates = careGiver.coordinates || {

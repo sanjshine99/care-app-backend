@@ -6,6 +6,9 @@ const CareReceiver = require("../models/CareReceiver");
 const Appointment = require("../models/Appointment");
 const mapboxService = require("../services/mapboxService");
 
+const DEFAULT_LNG = -0.1276;
+const DEFAULT_LAT = 51.5074;
+
 // @desc    Get all locations (care givers and care receivers)
 // @route   GET /api/map/locations
 // @access  Private
@@ -217,6 +220,61 @@ exports.getTodayAppointments = async (req, res, next) => {
         appointments: appointmentsWithLocations,
         count: appointmentsWithLocations.length,
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Re-geocode all care givers that have default London coordinates
+// @route   POST /api/map/regeocode-caregivers
+// @access  Private
+exports.regeocodeAllCareGivers = async (req, res, next) => {
+  try {
+    const careGivers = await CareGiver.find({});
+
+    const toFix = careGivers.filter((cg) => {
+      const coords = cg.coordinates?.coordinates;
+      if (!coords || coords.length < 2) return true;
+      return coords[0] === DEFAULT_LNG && coords[1] === DEFAULT_LAT;
+    });
+
+    if (toFix.length === 0) {
+      return res.json({
+        success: true,
+        data: { updated: 0, failed: 0, message: "All caregivers already have correct coordinates" },
+      });
+    }
+
+    let updated = 0;
+    let failed = 0;
+    const errors = [];
+
+    for (const cg of toFix) {
+      const fullAddress =
+        cg.address?.full ||
+        `${cg.address?.street}, ${cg.address?.city} ${cg.address?.postcode}, United Kingdom`;
+
+      try {
+        const coords = await mapboxService.geocodeAddress(fullAddress);
+        cg.coordinates = {
+          type: "Point",
+          coordinates: [coords.longitude, coords.latitude],
+        };
+        await cg.save();
+        updated++;
+      } catch (err) {
+        failed++;
+        errors.push(`${cg.name}: ${err.message}`);
+      }
+
+      // Avoid Mapbox rate limits
+      await new Promise((r) => setTimeout(r, 250));
+    }
+
+    res.json({
+      success: true,
+      data: { updated, failed, errors },
     });
   } catch (error) {
     next(error);
