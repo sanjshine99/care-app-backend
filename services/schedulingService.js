@@ -6,6 +6,7 @@ const CareGiver = require("../models/CareGiver");
 const CareReceiver = require("../models/CareReceiver");
 const Appointment = require("../models/Appointment");
 const settingsService = require("./settingsService");
+const { normalizeTimeToHHMM } = require("../utils/timeUtils");
 
 /**
  * Calculate travel time between two locations
@@ -473,6 +474,30 @@ async function isCareGiverAvailable(
 }
 
 /**
+ * Build a user-facing summary of why no care giver was available (counts per reason).
+ * @param {string[]} reasons - List of reason strings from isCareGiverAvailable
+ * @returns {string} e.g. "No care giver available: 2 not working on Saturday, 1 on time off (Personal)"
+ */
+function buildUnavailabilityReasonSummary(reasons) {
+  if (!reasons || reasons.length === 0) {
+    return "All care givers are unavailable or have conflicts";
+  }
+  const counts = {};
+  for (const r of reasons) {
+    counts[r] = (counts[r] || 0) + 1;
+  }
+  const maxReasonsToShow = 5;
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  const shown = entries.slice(0, maxReasonsToShow);
+  const parts = shown.map(([reason, count]) => `${reason} (${count})`);
+  const rest = entries.length - maxReasonsToShow;
+  if (rest > 0) {
+    parts.push(`${rest} other reason${rest !== 1 ? "s" : ""}`);
+  }
+  return `No care giver available: ${parts.join("; ")}`;
+}
+
+/**
  * Find best care giver for a visit
  */
 async function findBestCareGiver(
@@ -558,7 +583,8 @@ async function findBestCareGiver(
     if (anyWithSkills === 0) {
       return {
         careGiver: null,
-        reason: `No active care givers have all required skills: [${visit.requirements.join(", ")}]`,
+        reason:
+          "No available care givers have all the required skills for this visit.",
       };
     }
     return {
@@ -572,6 +598,7 @@ async function findBestCareGiver(
   const endTime = `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
 
   const scoredCareGivers = [];
+  const unavailabilityReasons = [];
 
   for (const cg of potentialCareGivers) {
     const availabilityCheck = await isCareGiverAvailable(
@@ -597,13 +624,18 @@ async function findBestCareGiver(
       }
 
       scoredCareGivers.push({ careGiver: cg, score, distance });
+    } else {
+      unavailabilityReasons.push(
+        availabilityCheck.reason || "Unavailable",
+      );
     }
   }
 
   if (scoredCareGivers.length === 0) {
+    const reasonSummary = buildUnavailabilityReasonSummary(unavailabilityReasons);
     return {
       careGiver: null,
-      reason: "All care givers are unavailable or have conflicts",
+      reason: reasonSummary,
     };
   }
 
@@ -801,10 +833,11 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
         );
       }
 
-      // Calculate end time
       const [hours, minutes] = visit.preferredTime.split(":").map(Number);
       const endMinutes = minutes + visit.duration;
-      const endTime = `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
+      const endTime = normalizeTimeToHHMM(
+        `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`,
+      );
 
       // Normalize appointment date to UTC midnight
       const appointmentDate = new Date(currentDate);
@@ -836,7 +869,7 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
           careReceiver: careReceiver._id,
           careGiver: primaryCGResult.careGiver._id,
           date: utcAppointmentDate,
-          startTime: visit.preferredTime,
+          startTime: normalizeTimeToHHMM(visit.preferredTime),
           endTime,
           duration: visit.duration,
           visitNumber: visit.visitNumber,
