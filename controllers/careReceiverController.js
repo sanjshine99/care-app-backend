@@ -354,12 +354,18 @@ exports.updateCareReceiver = async (req, res, next) => {
       }
     }
 
-    // Only mark appointments for reassignment when an *existing* visit's schedule changed.
+    // Cancel only appointments for visits whose schedule changed (or were removed).
     // Adding new visits should not invalidate existing appointments.
     const oldVisits = careReceiver.dailyVisits || [];
     const newVisits = req.body.dailyVisits || [];
     const oldById = new Map(oldVisits.map((v) => [String(v._id), v]));
-    let scheduleChanged = false;
+    const newIds = new Set(
+      (newVisits || [])
+        .filter((v) => v._id)
+        .map((v) => String(v._id))
+    );
+    const changedVisitNumbers = [];
+
     for (const newV of newVisits) {
       const id = newV._id && String(newV._id);
       if (!id || !oldById.has(id)) continue;
@@ -371,8 +377,13 @@ exports.updateCareReceiver = async (req, res, next) => {
         oldV.preferredTime !== newV.preferredTime ||
         oldV.duration !== newV.duration
       ) {
-        scheduleChanged = true;
-        break;
+        changedVisitNumbers.push(oldV.visitNumber);
+      }
+    }
+    for (const oldV of oldVisits) {
+      const id = oldV._id && String(oldV._id);
+      if (id && !newIds.has(id)) {
+        changedVisitNumbers.push(oldV.visitNumber);
       }
     }
 
@@ -388,28 +399,29 @@ exports.updateCareReceiver = async (req, res, next) => {
 
     console.log(" Updated successfully");
 
-    // If visit schedule changed, mark future appointments for review
-    if (scheduleChanged) {
+    if (changedVisitNumbers.length > 0) {
       const Appointment = require("../models/Appointment");
       const today = new Date();
       today.setUTCHours(0, 0, 0, 0);
 
-      const updatedCount = await Appointment.updateMany(
+      const cancelResult = await Appointment.updateMany(
         {
           careReceiver: req.params.id,
+          visitNumber: { $in: changedVisitNumbers },
           date: { $gte: today },
           status: { $in: ["scheduled", "in_progress"] },
         },
         {
           $set: {
-            status: "needs_reassignment",
-            invalidationReason: "Care receiver visit schedule was changed",
-            invalidatedAt: new Date(),
+            status: "cancelled",
+            cancellationReason: "Care receiver visit schedule was changed",
+            invalidationReason: null,
+            invalidatedAt: null,
           },
         }
       );
       console.log(
-        ` Schedule changed - marked ${updatedCount.modifiedCount} appointments for reassignment`
+        ` Visit schedule changed - cancelled ${cancelResult.modifiedCount} appointment(s) (visit numbers: ${changedVisitNumbers.join(", ")})`
       );
     }
 
