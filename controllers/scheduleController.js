@@ -10,8 +10,10 @@ const {
   bulkSchedule,
   findBestCareGiver,
   isDateInSchedule,
+  isCareGiverAvailable,
 } = require("../services/schedulingService");
 const notificationService = require("../services/notificationService");
+const settingsService = require("../services/settingsService");
 const { normalizeTimeToHHMM } = require("../utils/timeUtils");
 
 // =============================================================================
@@ -412,6 +414,9 @@ exports.analyzeUnscheduled = async (req, res, next) => {
     // Get all active care givers
     const allCareGivers = await CareGiver.find({ isActive: true }).lean();
 
+    const settings = await settingsService.getSchedulingSettings();
+    const maxDistanceKm = settings.maxDistanceKm ?? 20;
+
     // Analyze each care giver
     const careGiverAnalysis = [];
 
@@ -449,34 +454,67 @@ exports.analyzeUnscheduled = async (req, res, next) => {
         analysis.matchScore -= 30;
       }
 
-      // Check gender preference
+      // Check gender preference (generation never considers opposite gender)
       if (
         careReceiver.genderPreference &&
         careReceiver.genderPreference !== "no_preference" &&
         cg.gender.toLowerCase() !== careReceiver.genderPreference.toLowerCase()
       ) {
+        analysis.canAssign = false;
         analysis.rejectionReasons.push(
-          `Gender mismatch (preference: ${careReceiver.genderPreference}, care giver: ${cg.gender})`,
+          `Gender mismatch: Care receiver prefers ${careReceiver.genderPreference}, care giver is ${cg.gender}`,
         );
         analysis.matchScore -= 10;
       }
 
-      // Check availability
+      // Check availability (same logic as schedule generation: travel time, max appointments)
       const appointmentDate = new Date(date);
-      const availabilityCheck = await checkCareGiverAvailabilityFresh(
-        cg._id,
-        appointmentDate,
-        visit.preferredTime,
-        endTime,
-        careReceiver,
-      );
+      const careReceiverLocation =
+        careReceiver.coordinates?.coordinates ?? [];
+      let availabilityCheck;
+
+      if (
+        !careReceiverLocation ||
+        careReceiverLocation.length < 2
+      ) {
+        availabilityCheck = {
+          available: false,
+          reason:
+            "Care receiver has no valid location coordinates — re-save their address to geocode it",
+        };
+      } else {
+        availabilityCheck = await isCareGiverAvailable(
+          cg._id,
+          appointmentDate,
+          visit.preferredTime,
+          endTime,
+          careReceiverLocation,
+          null,
+        );
+      }
 
       if (!availabilityCheck.available) {
         analysis.canAssign = false;
         analysis.rejectionReasons.push(availabilityCheck.reason);
         analysis.matchScore -= 40;
-      } else {
-        analysis.distance = availabilityCheck.distance;
+      } else if (
+        cg.coordinates?.coordinates &&
+        careReceiver.coordinates?.coordinates?.length >= 2
+      ) {
+        analysis.distance = calculateDistance(
+          cg.coordinates.coordinates,
+          careReceiver.coordinates.coordinates,
+        );
+      }
+
+      if (
+        analysis.distance != null &&
+        analysis.distance > maxDistanceKm
+      ) {
+        analysis.canAssign = false;
+        analysis.rejectionReasons.push(
+          `Beyond maximum allowed distance (${maxDistanceKm} km)`,
+        );
       }
 
       // Ensure score is between 0-100
@@ -521,123 +559,6 @@ exports.analyzeUnscheduled = async (req, res, next) => {
     next(error);
   }
 };
-
-// Helper function - First instance (used by analyzeUnscheduled)
-async function checkCareGiverAvailabilityFresh(
-  careGiverId,
-  date,
-  startTime,
-  endTime,
-  careReceiver,
-) {
-  const careGiver = await CareGiver.findById(careGiverId).lean();
-
-  if (!careGiver || !careGiver.isActive) {
-    return {
-      available: false,
-      reason: careGiver ? "Inactive" : "Care giver not found",
-    };
-  }
-
-  // ========================================
-  // FIX: Check time off from CareGiver FIRST
-  // ========================================
-  const isOnTimeOff = (careGiver.timeOff || []).some((to) => {
-    const startDate = new Date(to.startDate);
-    startDate.setHours(0, 0, 0, 0);
-
-    const endDate = new Date(to.endDate);
-    endDate.setHours(23, 59, 59, 999);
-
-    const checkDate = new Date(date);
-    checkDate.setHours(0, 0, 0, 0);
-
-    return checkDate >= startDate && checkDate <= endDate;
-  });
-
-  if (isOnTimeOff) {
-    console.log(
-      `   ${careGiver.name} is on time off on ${date.toISOString().split("T")[0]}`,
-    );
-    return { available: false, reason: "On time off" };
-  }
-  // ========================================
-
-  let availability = await Availability.findOne({
-    careGiver: careGiverId,
-    effectiveFrom: { $lte: date },
-    $or: [{ effectiveTo: null }, { effectiveTo: { $gte: date } }],
-    isActive: true,
-  }).lean();
-
-  if (
-    !availability &&
-    careGiver.availability &&
-    careGiver.availability.length > 0
-  ) {
-    availability = {
-      schedule: careGiver.availability,
-    };
-  }
-
-  if (!availability) {
-    return { available: false, reason: "No availability schedule" };
-  }
-
-  const dayOfWeek = date.toLocaleDateString("en-GB", { weekday: "long" });
-  const daySchedule = availability.schedule.find(
-    (s) => s.dayOfWeek === dayOfWeek,
-  );
-
-  if (!daySchedule || daySchedule.slots.length === 0) {
-    return { available: false, reason: `Not working on ${dayOfWeek}` };
-  }
-
-  const isInWorkingHours = daySchedule.slots.some((slot) => {
-    return startTime >= slot.startTime && endTime <= slot.endTime;
-  });
-
-  if (!isInWorkingHours) {
-    return { available: false, reason: "Outside working hours" };
-  }
-
-  const startOfDay = new Date(date);
-  startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(date);
-  endOfDay.setHours(23, 59, 59, 999);
-
-  const conflicts = await Appointment.find({
-    $or: [{ careGiver: careGiverId }, { secondaryCareGiver: careGiverId }],
-    date: { $gte: startOfDay, $lte: endOfDay },
-    status: { $in: ["scheduled", "in_progress"] },
-  }).lean();
-
-  for (const apt of conflicts) {
-    if (
-      (startTime >= apt.startTime && startTime < apt.endTime) ||
-      (endTime > apt.startTime && endTime <= apt.endTime) ||
-      (startTime <= apt.startTime && endTime >= apt.endTime)
-    ) {
-      return { available: false, reason: "Has conflicting appointment" };
-    }
-  }
-
-  let distance = null;
-  if (
-    careGiver.coordinates?.coordinates &&
-    careReceiver.coordinates?.coordinates
-  ) {
-    distance = calculateDistance(
-      careGiver.coordinates.coordinates,
-      careReceiver.coordinates.coordinates,
-    );
-  }
-
-  return {
-    available: true,
-    distance: distance,
-  };
-}
 
 function calculateDistance(coords1, coords2) {
   const [lon1, lat1] = coords1;
