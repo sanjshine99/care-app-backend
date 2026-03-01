@@ -204,7 +204,7 @@ exports.getUnscheduled = async (req, res, next) => {
   console.log("  THIS ENDPOINT ONLY CALCULATES - NO GENERATION");
 
   try {
-    const { startDate, endDate } = req.query;
+    const { startDate, endDate, summaryOnly } = req.query;
 
     if (!startDate || !endDate) {
       return res.status(400).json({
@@ -218,21 +218,41 @@ exports.getUnscheduled = async (req, res, next) => {
 
     const start = new Date(startDate);
     const end = new Date(endDate);
+    const skipReasons = summaryOnly === "true" || summaryOnly === true;
 
     const now = new Date();
     const todayUTC = new Date(
       Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
     );
 
-    console.log("📥 Calculating unscheduled appointments...");
+    console.log("📥 Calculating unscheduled appointments...", skipReasons ? "(summaryOnly)" : "");
 
     const careReceivers = await CareReceiver.find({ isActive: true }).lean();
+    const careReceiverIds = careReceivers.map((cr) => cr._id);
+
+    const allAppointments = await Appointment.find({
+      careReceiver: { $in: careReceiverIds },
+      date: { $gte: start, $lte: end },
+    }).lean();
+
+    const appointmentsByCr = new Map();
+    allAppointments.forEach((apt) => {
+      const key = apt.careReceiver.toString();
+      if (!appointmentsByCr.has(key)) {
+        appointmentsByCr.set(key, []);
+      }
+      appointmentsByCr.get(key).push(apt);
+    });
+
     const unscheduled = [];
 
     for (const cr of careReceivers) {
       if (!cr.dailyVisits || cr.dailyVisits.length === 0) {
         continue;
       }
+
+      const existingAppointments =
+        appointmentsByCr.get(cr._id.toString()) || [];
 
       const createdAtUTC = cr.createdAt
         ? new Date(
@@ -268,13 +288,6 @@ exports.getUnscheduled = async (req, res, next) => {
         currentDate.setUTCDate(currentDate.getUTCDate() + 1);
       }
 
-      // Get existing appointments
-      const existingAppointments = await Appointment.find({
-        careReceiver: cr._id,
-        date: { $gte: start, $lte: end },
-      }).lean();
-
-      // Build map of existing appointments by date and visit number
       const appointmentMap = new Map();
       existingAppointments.forEach((apt) => {
         const dateKey = apt.date.toISOString().split("T")[0];
@@ -282,7 +295,6 @@ exports.getUnscheduled = async (req, res, next) => {
         appointmentMap.set(visitKey, apt);
       });
 
-      // FIXED: Calculate expected appointments using isDateInSchedule
       let expectedCount = 0;
       const details = [];
 
@@ -290,7 +302,6 @@ exports.getUnscheduled = async (req, res, next) => {
         const dateStr = date.toISOString().split("T")[0];
 
         for (const visit of cr.dailyVisits) {
-          //  FIXED: Check if this date matches the visit's schedule
           const shouldHaveAppointment = isDateInSchedule(
             date,
             visit,
@@ -299,13 +310,14 @@ exports.getUnscheduled = async (req, res, next) => {
           );
 
           if (shouldHaveAppointment) {
-            expectedCount++; // Count this as an expected appointment
+            expectedCount++;
 
             const visitKey = `${dateStr}-${visit.visitNumber}`;
 
             if (!appointmentMap.has(visitKey)) {
-              // This appointment should exist but doesn't - it's missing
-              const reason = await findSchedulingFailureReason(cr, visit, date);
+              const reason = skipReasons
+                ? "Not yet scheduled"
+                : await findSchedulingFailureReason(cr, visit, date);
 
               details.push({
                 date: dateStr,
@@ -320,8 +332,6 @@ exports.getUnscheduled = async (req, res, next) => {
               });
             }
           }
-          // If shouldHaveAppointment is false, we skip this date entirely
-          // (it's not part of the schedule, so we don't count it as missing)
         }
       }
 
@@ -335,7 +345,7 @@ exports.getUnscheduled = async (req, res, next) => {
             address: cr.address,
             coordinates: cr.coordinates,
           },
-          expected: expectedCount, //  FIXED: Use calculated count, not dates.length * visits.length
+          expected: expectedCount,
           actual: existingAppointments.length,
           missing: details.length,
           details: details,
