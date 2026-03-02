@@ -4,8 +4,10 @@
 const CareGiver = require("../models/CareGiver");
 const CareReceiver = require("../models/CareReceiver");
 const Appointment = require("../models/Appointment");
-const Setting = require("../models/Settings");
 const Availability = require("../models/Availability");
+const settingsService = require("../services/settingsService");
+const { calculateTravelTime } = require("../services/schedulingService");
+const { normalizeTimeToHHMM } = require("../utils/timeUtils");
 const moment = require("moment");
 
 /**
@@ -33,16 +35,15 @@ exports.analyzeUnscheduledAppointment = async (req, res) => {
 
     console.log("Care Receiver:", careReceiver.name);
 
-    // Get settings
-    const settings = await Setting.findOne();
-    const maxDistance = settings?.maxDistanceKm || 20;
-    const maxAppointmentsPerDay = settings?.maxAppointmentsPerDay || 10;
-    const travelTimeBuffer = settings?.travelTimeBuffer || 15;
+    const settings = await settingsService.getSchedulingSettings();
+    const maxDistance = settings?.maxDistanceKm ?? 20;
+    const maxAppointmentsPerDay = settings?.maxAppointmentsPerDay ?? 10;
+    const travelTimeBufferMinutes = settings?.travelTimeBufferMinutes ?? 15;
 
     console.log("Settings:", {
       maxDistance,
       maxAppointmentsPerDay,
-      travelTimeBuffer,
+      travelTimeBufferMinutes,
     });
 
     // Get all active care givers
@@ -214,14 +215,17 @@ exports.analyzeUnscheduledAppointment = async (req, res) => {
           }
         }
 
-        // Check 7: Max appointments per day
+        // Check 7: Max appointments per day (include secondary care giver slots)
         const startOfDay = new Date(appointmentDate);
-        startOfDay.setHours(0, 0, 0, 0);
+        startOfDay.setUTCHours(0, 0, 0, 0);
         const endOfDay = new Date(appointmentDate);
-        endOfDay.setHours(23, 59, 59, 999);
+        endOfDay.setUTCHours(23, 59, 59, 999);
 
         const appointmentCount = await Appointment.countDocuments({
-          careGiver: careGiver._id,
+          $or: [
+            { careGiver: careGiver._id },
+            { secondaryCareGiver: careGiver._id },
+          ],
           date: { $gte: startOfDay, $lte: endOfDay },
           status: { $in: ["scheduled", "in_progress"] },
         });
@@ -237,19 +241,38 @@ exports.analyzeUnscheduledAppointment = async (req, res) => {
           );
         }
 
-        // Check 8: Schedule conflicts
+        // Check 8: Schedule conflicts (include appointments where care giver is primary or secondary)
         const existingAppointments = await Appointment.find({
-          careGiver: careGiver._id,
+          $or: [
+            { careGiver: careGiver._id },
+            { secondaryCareGiver: careGiver._id },
+          ],
           date: { $gte: startOfDay, $lte: endOfDay },
           status: { $in: ["scheduled", "in_progress"] },
-        }).sort({ startTime: 1 });
+        })
+          .populate("careReceiver", "coordinates")
+          .sort({ startTime: 1 });
 
-        const preferredTime = visit.preferredTime;
+        const preferredTime = normalizeTimeToHHMM(visit.preferredTime);
         const [hours, minutes] = preferredTime.split(":").map(Number);
         const endMinutes = minutes + visit.duration;
-        const proposedEnd = `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
+        const proposedEnd = normalizeTimeToHHMM(
+          `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`,
+        );
+
+        const currentCoords =
+          careReceiver.coordinates?.coordinates?.length >= 2
+            ? careReceiver.coordinates.coordinates
+            : null;
 
         for (const existing of existingAppointments) {
+          const existingCareReceiverId =
+            existing.careReceiver?._id?.toString() ||
+            existing.careReceiver?.toString?.();
+          const isSameReceiver =
+            existingCareReceiverId &&
+            careReceiver._id.toString() === existingCareReceiverId;
+
           // Check for time overlap
           if (
             (preferredTime >= existing.startTime &&
@@ -270,28 +293,54 @@ exports.analyzeUnscheduledAppointment = async (req, res) => {
             break;
           }
 
-          // Check travel time buffer
-          if (
-            existing.careReceiver &&
-            careReceiver._id.toString() !== existing.careReceiver.toString()
-          ) {
-            const timeBetweenStart = Math.abs(
-              parseTime(preferredTime) - parseTime(existing.endTime),
-            );
-            const timeBetweenEnd = Math.abs(
-              parseTime(proposedEnd) - parseTime(existing.startTime),
-            );
-            const minTimeBetween = Math.min(timeBetweenStart, timeBetweenEnd);
+          if (isSameReceiver) continue;
 
-            if (minTimeBetween < travelTimeBuffer && minTimeBetween > 0) {
-              analysis.canAssign = false;
-              analysis.rejectionReasons.push(
-                `Insufficient travel time: Only ${minTimeBetween} min between appointments (needs ${travelTimeBuffer} min)`,
+          const existingCoords =
+            existing.careReceiver?.coordinates?.coordinates?.length >= 2
+              ? existing.careReceiver.coordinates.coordinates
+              : null;
+
+          let actualGapMinutes = null;
+          let requiredGapMinutes = travelTimeBufferMinutes;
+          let travelDirection = null;
+
+          if (proposedEnd <= existing.startTime) {
+            actualGapMinutes =
+              parseTime(existing.startTime) - parseTime(proposedEnd);
+            travelDirection = "to next";
+            if (currentCoords && existingCoords) {
+              const travelMins = await calculateTravelTime(
+                currentCoords,
+                existingCoords,
               );
-              analysis.matchScore -= 25;
-              console.log(`   Insufficient travel time: ${minTimeBetween} min`);
-              break;
+              requiredGapMinutes = travelMins + travelTimeBufferMinutes;
             }
+          } else if (existing.endTime <= preferredTime) {
+            actualGapMinutes =
+              parseTime(preferredTime) - parseTime(existing.endTime);
+            travelDirection = "from previous";
+            if (currentCoords && existingCoords) {
+              const travelMins = await calculateTravelTime(
+                existingCoords,
+                currentCoords,
+              );
+              requiredGapMinutes = travelMins + travelTimeBufferMinutes;
+            }
+          }
+
+          if (
+            actualGapMinutes !== null &&
+            actualGapMinutes < requiredGapMinutes
+          ) {
+            analysis.canAssign = false;
+            analysis.rejectionReasons.push(
+              `Insufficient travel time ${travelDirection} appointment (needs ${requiredGapMinutes} min, has ${actualGapMinutes} min)`,
+            );
+            analysis.matchScore -= 25;
+            console.log(
+              `   Insufficient travel time ${travelDirection}: ${actualGapMinutes} min < ${requiredGapMinutes} min`,
+            );
+            break;
           }
         }
 

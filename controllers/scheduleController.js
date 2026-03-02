@@ -11,6 +11,7 @@ const {
   findBestCareGiver,
   isDateInSchedule,
   isCareGiverAvailable,
+  calculateDistance,
 } = require("../services/schedulingService");
 const notificationService = require("../services/notificationService");
 const settingsService = require("../services/settingsService");
@@ -560,22 +561,6 @@ exports.analyzeUnscheduled = async (req, res, next) => {
   }
 };
 
-function calculateDistance(coords1, coords2) {
-  const [lon1, lat1] = coords1;
-  const [lon2, lat2] = coords2;
-  const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
 // @desc    Get schedule statistics
 // @route   GET /api/schedule/stats
 // @access  Private
@@ -721,96 +706,100 @@ exports.findAvailableForManual = async (req, res, next) => {
     );
 
     const appointmentDate = new Date(date);
+    const startTimeNorm = normalizeTimeToHHMM(startTime);
+    const endTimeNorm = normalizeTimeToHHMM(endTime);
 
-    // STEP 2: Get ALL active care givers with FRESH data
-    console.log("\n--- STEP 2: Fetching ALL active care givers (FRESH) ---");
+    const careReceiverLocation =
+      careReceiver.coordinates?.coordinates ?? [];
+    if (!careReceiverLocation.length || careReceiverLocation.length < 2) {
+      return res.json({
+        success: true,
+        data: {
+          availableCareGivers: [],
+          total: 0,
+          careReceiverPreferences: {
+            genderPreference: careReceiver.genderPreference,
+            requirements: requirements,
+            doubleHanded: doubleHanded,
+          },
+        },
+      });
+    }
+
+    // STEP 2: Get ALL active care givers
     const allCareGivers = await CareGiver.find({ isActive: true }).lean();
-    console.log(`Found ${allCareGivers.length} active care givers in database`);
+    console.log(`Found ${allCareGivers.length} active care givers`);
 
-    // Log each care giver's current skills
-    allCareGivers.forEach((cg) => {
-      console.log(`\n${cg.name}:`);
-      console.log(`  Skills: [${cg.skills.join(", ")}]`);
-      console.log(`  Gender: ${cg.gender}`);
-      console.log(`  Can Drive: ${cg.canDrive}`);
-      console.log(`  Address: ${cg.address?.city || "Unknown"}`);
-      console.log(
-        `  Working Days: ${cg.availability?.length || 0} days configured`,
-      );
-    });
-
-    // STEP 3: Filter by skills (if requirements provided)
-    console.log("\n--- STEP 3: Filtering by skills ---");
+    // STEP 3: Filter by skills (same as analyze)
     let potentialCareGivers = allCareGivers;
-
     if (requirements && requirements.length > 0) {
-      console.log("Filtering for requirements:", requirements);
-
       potentialCareGivers = allCareGivers.filter((cg) => {
-        // Normalize both requirement and skill names
         const normalizedSkills = cg.skills.map((s) =>
           s.toLowerCase().replace(/ /g, "_"),
         );
         const normalizedRequirements = requirements.map((r) =>
           r.toLowerCase().replace(/ /g, "_"),
         );
-
-        const hasAllSkills = normalizedRequirements.every((req) =>
+        return normalizedRequirements.every((req) =>
           normalizedSkills.includes(req),
         );
-
-        console.log(`\n  ${cg.name}:`);
-        console.log(`    Has: [${normalizedSkills.join(", ")}]`);
-        console.log(`    Needs: [${normalizedRequirements.join(", ")}]`);
-        console.log(`    Match: ${hasAllSkills ? " YES" : " NO"}`);
-
-        return hasAllSkills;
       });
-
-      console.log(
-        `\nAfter skill filtering: ${potentialCareGivers.length} care givers qualify`,
-      );
-    } else {
-      console.log("No skill requirements - all care givers qualify");
     }
 
-    // STEP 4: Check each care giver's FRESH availability
-    console.log("\n--- STEP 4: Checking availability for each care giver ---");
+    // Gender filter (same as analyze and generation)
+    if (
+      careReceiver.genderPreference &&
+      careReceiver.genderPreference !== "no_preference"
+    ) {
+      potentialCareGivers = potentialCareGivers.filter(
+        (cg) =>
+          cg.gender &&
+          cg.gender.toLowerCase() ===
+            careReceiver.genderPreference.toLowerCase(),
+      );
+    }
+
+    // Double-handed: exclude singleHandedOnly caregivers
+    if (doubleHanded) {
+      potentialCareGivers = potentialCareGivers.filter(
+        (cg) => cg.singleHandedOnly !== true,
+      );
+    }
+
+    const settings = await settingsService.getSchedulingSettings();
+    const maxDistanceKm = settings.maxDistanceKm ?? 20;
+
+    // STEP 4: Check availability with same logic as analyze (isCareGiverAvailable)
     const availableCareGivers = [];
-
     for (const cg of potentialCareGivers) {
-      console.log(`\n>>> Checking ${cg.name}...`);
-
-      const availabilityCheck = await checkCareGiverAvailabilityForManual(
+      const availabilityCheck = await isCareGiverAvailable(
         cg._id,
         appointmentDate,
-        startTime,
-        endTime,
-        careReceiver,
+        startTimeNorm,
+        endTimeNorm,
+        careReceiverLocation,
+        null,
       );
 
-      console.log(
-        `    Available: ${availabilityCheck.available ? " YES" : " NO"}`,
-      );
-      if (!availabilityCheck.available) {
-        console.log(`    Reason: ${availabilityCheck.reason}`);
-      } else {
-        console.log(
-          `    Distance: ${availabilityCheck.distance?.toFixed(2)} km`,
-        );
-        console.log(
-          `    Travel Time: ~${availabilityCheck.travelTime} minutes`,
-        );
-      }
+      if (!availabilityCheck.available) continue;
 
-      if (availabilityCheck.available) {
-        availableCareGivers.push({
-          ...cg,
-          distance: availabilityCheck.distance,
-          travelTime: availabilityCheck.travelTime,
-          availabilityDetails: availabilityCheck.details,
-        });
+      let distance = null;
+      if (
+        cg.coordinates?.coordinates &&
+        careReceiver.coordinates?.coordinates?.length >= 2
+      ) {
+        distance = calculateDistance(
+          cg.coordinates.coordinates,
+          careReceiver.coordinates.coordinates,
+        );
       }
+      if (distance != null && distance > maxDistanceKm) continue;
+
+      availableCareGivers.push({
+        ...cg,
+        distance,
+        travelTime: null,
+      });
     }
 
     console.log("\n--- FINAL RESULTS ---");
