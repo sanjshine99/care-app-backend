@@ -10,8 +10,11 @@ const {
   bulkSchedule,
   findBestCareGiver,
   isDateInSchedule,
+  isCareGiverAvailable,
+  calculateDistance,
 } = require("../services/schedulingService");
 const notificationService = require("../services/notificationService");
+const settingsService = require("../services/settingsService");
 const { normalizeTimeToHHMM } = require("../utils/timeUtils");
 
 // =============================================================================
@@ -412,6 +415,9 @@ exports.analyzeUnscheduled = async (req, res, next) => {
     // Get all active care givers
     const allCareGivers = await CareGiver.find({ isActive: true }).lean();
 
+    const settings = await settingsService.getSchedulingSettings();
+    const maxDistanceKm = settings.maxDistanceKm ?? 20;
+
     // Analyze each care giver
     const careGiverAnalysis = [];
 
@@ -449,34 +455,67 @@ exports.analyzeUnscheduled = async (req, res, next) => {
         analysis.matchScore -= 30;
       }
 
-      // Check gender preference
+      // Check gender preference (generation never considers opposite gender)
       if (
         careReceiver.genderPreference &&
         careReceiver.genderPreference !== "no_preference" &&
         cg.gender.toLowerCase() !== careReceiver.genderPreference.toLowerCase()
       ) {
+        analysis.canAssign = false;
         analysis.rejectionReasons.push(
-          `Gender mismatch (preference: ${careReceiver.genderPreference}, care giver: ${cg.gender})`,
+          `Gender mismatch: Care receiver prefers ${careReceiver.genderPreference}, care giver is ${cg.gender}`,
         );
         analysis.matchScore -= 10;
       }
 
-      // Check availability
+      // Check availability (same logic as schedule generation: travel time, max appointments)
       const appointmentDate = new Date(date);
-      const availabilityCheck = await checkCareGiverAvailabilityFresh(
-        cg._id,
-        appointmentDate,
-        visit.preferredTime,
-        endTime,
-        careReceiver,
-      );
+      const careReceiverLocation =
+        careReceiver.coordinates?.coordinates ?? [];
+      let availabilityCheck;
+
+      if (
+        !careReceiverLocation ||
+        careReceiverLocation.length < 2
+      ) {
+        availabilityCheck = {
+          available: false,
+          reason:
+            "Care receiver has no valid location coordinates — re-save their address to geocode it",
+        };
+      } else {
+        availabilityCheck = await isCareGiverAvailable(
+          cg._id,
+          appointmentDate,
+          visit.preferredTime,
+          endTime,
+          careReceiverLocation,
+          null,
+        );
+      }
 
       if (!availabilityCheck.available) {
         analysis.canAssign = false;
         analysis.rejectionReasons.push(availabilityCheck.reason);
         analysis.matchScore -= 40;
-      } else {
-        analysis.distance = availabilityCheck.distance;
+      } else if (
+        cg.coordinates?.coordinates &&
+        careReceiver.coordinates?.coordinates?.length >= 2
+      ) {
+        analysis.distance = calculateDistance(
+          cg.coordinates.coordinates,
+          careReceiver.coordinates.coordinates,
+        );
+      }
+
+      if (
+        analysis.distance != null &&
+        analysis.distance > maxDistanceKm
+      ) {
+        analysis.canAssign = false;
+        analysis.rejectionReasons.push(
+          `Beyond maximum allowed distance (${maxDistanceKm} km)`,
+        );
       }
 
       // Ensure score is between 0-100
@@ -521,139 +560,6 @@ exports.analyzeUnscheduled = async (req, res, next) => {
     next(error);
   }
 };
-
-// Helper function - First instance (used by analyzeUnscheduled)
-async function checkCareGiverAvailabilityFresh(
-  careGiverId,
-  date,
-  startTime,
-  endTime,
-  careReceiver,
-) {
-  const careGiver = await CareGiver.findById(careGiverId).lean();
-
-  if (!careGiver || !careGiver.isActive) {
-    return {
-      available: false,
-      reason: careGiver ? "Inactive" : "Care giver not found",
-    };
-  }
-
-  // ========================================
-  // FIX: Check time off from CareGiver FIRST
-  // ========================================
-  const isOnTimeOff = (careGiver.timeOff || []).some((to) => {
-    const startDate = new Date(to.startDate);
-    startDate.setHours(0, 0, 0, 0);
-
-    const endDate = new Date(to.endDate);
-    endDate.setHours(23, 59, 59, 999);
-
-    const checkDate = new Date(date);
-    checkDate.setHours(0, 0, 0, 0);
-
-    return checkDate >= startDate && checkDate <= endDate;
-  });
-
-  if (isOnTimeOff) {
-    console.log(
-      `   ${careGiver.name} is on time off on ${date.toISOString().split("T")[0]}`,
-    );
-    return { available: false, reason: "On time off" };
-  }
-  // ========================================
-
-  let availability = await Availability.findOne({
-    careGiver: careGiverId,
-    effectiveFrom: { $lte: date },
-    $or: [{ effectiveTo: null }, { effectiveTo: { $gte: date } }],
-    isActive: true,
-  }).lean();
-
-  if (
-    !availability &&
-    careGiver.availability &&
-    careGiver.availability.length > 0
-  ) {
-    availability = {
-      schedule: careGiver.availability,
-    };
-  }
-
-  if (!availability) {
-    return { available: false, reason: "No availability schedule" };
-  }
-
-  const dayOfWeek = date.toLocaleDateString("en-GB", { weekday: "long" });
-  const daySchedule = availability.schedule.find(
-    (s) => s.dayOfWeek === dayOfWeek,
-  );
-
-  if (!daySchedule || daySchedule.slots.length === 0) {
-    return { available: false, reason: `Not working on ${dayOfWeek}` };
-  }
-
-  const isInWorkingHours = daySchedule.slots.some((slot) => {
-    return startTime >= slot.startTime && endTime <= slot.endTime;
-  });
-
-  if (!isInWorkingHours) {
-    return { available: false, reason: "Outside working hours" };
-  }
-
-  const startOfDay = new Date(date);
-  startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(date);
-  endOfDay.setHours(23, 59, 59, 999);
-
-  const conflicts = await Appointment.find({
-    $or: [{ careGiver: careGiverId }, { secondaryCareGiver: careGiverId }],
-    date: { $gte: startOfDay, $lte: endOfDay },
-    status: { $in: ["scheduled", "in_progress"] },
-  }).lean();
-
-  for (const apt of conflicts) {
-    if (
-      (startTime >= apt.startTime && startTime < apt.endTime) ||
-      (endTime > apt.startTime && endTime <= apt.endTime) ||
-      (startTime <= apt.startTime && endTime >= apt.endTime)
-    ) {
-      return { available: false, reason: "Has conflicting appointment" };
-    }
-  }
-
-  let distance = null;
-  if (
-    careGiver.coordinates?.coordinates &&
-    careReceiver.coordinates?.coordinates
-  ) {
-    distance = calculateDistance(
-      careGiver.coordinates.coordinates,
-      careReceiver.coordinates.coordinates,
-    );
-  }
-
-  return {
-    available: true,
-    distance: distance,
-  };
-}
-
-function calculateDistance(coords1, coords2) {
-  const [lon1, lat1] = coords1;
-  const [lon2, lat2] = coords2;
-  const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
 
 // @desc    Get schedule statistics
 // @route   GET /api/schedule/stats
@@ -800,96 +706,100 @@ exports.findAvailableForManual = async (req, res, next) => {
     );
 
     const appointmentDate = new Date(date);
+    const startTimeNorm = normalizeTimeToHHMM(startTime);
+    const endTimeNorm = normalizeTimeToHHMM(endTime);
 
-    // STEP 2: Get ALL active care givers with FRESH data
-    console.log("\n--- STEP 2: Fetching ALL active care givers (FRESH) ---");
+    const careReceiverLocation =
+      careReceiver.coordinates?.coordinates ?? [];
+    if (!careReceiverLocation.length || careReceiverLocation.length < 2) {
+      return res.json({
+        success: true,
+        data: {
+          availableCareGivers: [],
+          total: 0,
+          careReceiverPreferences: {
+            genderPreference: careReceiver.genderPreference,
+            requirements: requirements,
+            doubleHanded: doubleHanded,
+          },
+        },
+      });
+    }
+
+    // STEP 2: Get ALL active care givers
     const allCareGivers = await CareGiver.find({ isActive: true }).lean();
-    console.log(`Found ${allCareGivers.length} active care givers in database`);
+    console.log(`Found ${allCareGivers.length} active care givers`);
 
-    // Log each care giver's current skills
-    allCareGivers.forEach((cg) => {
-      console.log(`\n${cg.name}:`);
-      console.log(`  Skills: [${cg.skills.join(", ")}]`);
-      console.log(`  Gender: ${cg.gender}`);
-      console.log(`  Can Drive: ${cg.canDrive}`);
-      console.log(`  Address: ${cg.address?.city || "Unknown"}`);
-      console.log(
-        `  Working Days: ${cg.availability?.length || 0} days configured`,
-      );
-    });
-
-    // STEP 3: Filter by skills (if requirements provided)
-    console.log("\n--- STEP 3: Filtering by skills ---");
+    // STEP 3: Filter by skills (same as analyze)
     let potentialCareGivers = allCareGivers;
-
     if (requirements && requirements.length > 0) {
-      console.log("Filtering for requirements:", requirements);
-
       potentialCareGivers = allCareGivers.filter((cg) => {
-        // Normalize both requirement and skill names
         const normalizedSkills = cg.skills.map((s) =>
           s.toLowerCase().replace(/ /g, "_"),
         );
         const normalizedRequirements = requirements.map((r) =>
           r.toLowerCase().replace(/ /g, "_"),
         );
-
-        const hasAllSkills = normalizedRequirements.every((req) =>
+        return normalizedRequirements.every((req) =>
           normalizedSkills.includes(req),
         );
-
-        console.log(`\n  ${cg.name}:`);
-        console.log(`    Has: [${normalizedSkills.join(", ")}]`);
-        console.log(`    Needs: [${normalizedRequirements.join(", ")}]`);
-        console.log(`    Match: ${hasAllSkills ? " YES" : " NO"}`);
-
-        return hasAllSkills;
       });
-
-      console.log(
-        `\nAfter skill filtering: ${potentialCareGivers.length} care givers qualify`,
-      );
-    } else {
-      console.log("No skill requirements - all care givers qualify");
     }
 
-    // STEP 4: Check each care giver's FRESH availability
-    console.log("\n--- STEP 4: Checking availability for each care giver ---");
+    // Gender filter (same as analyze and generation)
+    if (
+      careReceiver.genderPreference &&
+      careReceiver.genderPreference !== "no_preference"
+    ) {
+      potentialCareGivers = potentialCareGivers.filter(
+        (cg) =>
+          cg.gender &&
+          cg.gender.toLowerCase() ===
+            careReceiver.genderPreference.toLowerCase(),
+      );
+    }
+
+    // Double-handed: exclude singleHandedOnly caregivers
+    if (doubleHanded) {
+      potentialCareGivers = potentialCareGivers.filter(
+        (cg) => cg.singleHandedOnly !== true,
+      );
+    }
+
+    const settings = await settingsService.getSchedulingSettings();
+    const maxDistanceKm = settings.maxDistanceKm ?? 20;
+
+    // STEP 4: Check availability with same logic as analyze (isCareGiverAvailable)
     const availableCareGivers = [];
-
     for (const cg of potentialCareGivers) {
-      console.log(`\n>>> Checking ${cg.name}...`);
-
-      const availabilityCheck = await checkCareGiverAvailabilityForManual(
+      const availabilityCheck = await isCareGiverAvailable(
         cg._id,
         appointmentDate,
-        startTime,
-        endTime,
-        careReceiver,
+        startTimeNorm,
+        endTimeNorm,
+        careReceiverLocation,
+        null,
       );
 
-      console.log(
-        `    Available: ${availabilityCheck.available ? " YES" : " NO"}`,
-      );
-      if (!availabilityCheck.available) {
-        console.log(`    Reason: ${availabilityCheck.reason}`);
-      } else {
-        console.log(
-          `    Distance: ${availabilityCheck.distance?.toFixed(2)} km`,
-        );
-        console.log(
-          `    Travel Time: ~${availabilityCheck.travelTime} minutes`,
-        );
-      }
+      if (!availabilityCheck.available) continue;
 
-      if (availabilityCheck.available) {
-        availableCareGivers.push({
-          ...cg,
-          distance: availabilityCheck.distance,
-          travelTime: availabilityCheck.travelTime,
-          availabilityDetails: availabilityCheck.details,
-        });
+      let distance = null;
+      if (
+        cg.coordinates?.coordinates &&
+        careReceiver.coordinates?.coordinates?.length >= 2
+      ) {
+        distance = calculateDistance(
+          cg.coordinates.coordinates,
+          careReceiver.coordinates.coordinates,
+        );
       }
+      if (distance != null && distance > maxDistanceKm) continue;
+
+      availableCareGivers.push({
+        ...cg,
+        distance,
+        travelTime: null,
+      });
     }
 
     console.log("\n--- FINAL RESULTS ---");
