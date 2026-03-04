@@ -68,6 +68,14 @@ const settingsSchema = new mongoose.Schema(
         max: 240,
         description: "Default appointment duration in minutes",
       },
+
+      travelSpeedKmh: {
+        type: Number,
+        default: 30,
+        min: 5,
+        max: 120,
+        description: "Assumed travel speed (km/h) for distance-to-time estimate when Mapbox unavailable",
+      },
     },
 
     // Notification Settings

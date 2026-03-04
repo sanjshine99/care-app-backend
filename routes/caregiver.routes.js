@@ -3,6 +3,12 @@
 
 const express = require("express");
 const { protect } = require("../middleware/auth");
+
+// Cache responses that are stable within a window — reduces DB round-trips on repeat navigation
+const cachePrivate = (seconds) => (_req, res, next) => {
+  res.set("Cache-Control", `private, max-age=${seconds}`);
+  next();
+};
 const {
   getAllCareGivers,
   getCareGiverById,
@@ -21,7 +27,7 @@ router.use(protect);
 // Care giver CRUD routes
 router
   .route("/")
-  .get(getAllCareGivers) // GET /api/caregivers
+  .get(cachePrivate(120), getAllCareGivers) // GET /api/caregivers — cached 2 min (matches React Query staleTime)
   .post(createCareGiver); // POST /api/caregivers
 
 router

@@ -4,6 +4,7 @@
 const CareGiver = require("../models/CareGiver");
 const Availability = require("../models/Availability");
 const Appointment = require("../models/Appointment");
+const logger = require("../utils/logger");
 
 // Try to import geocode service, but don't fail if it doesn't exist
 let geocodeAddress;
@@ -12,6 +13,9 @@ try {
 } catch (e) {
   geocodeAddress = null;
 }
+
+// Escape special regex characters to prevent ReDoS attacks
+const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // @desc    Get all care givers with filters
 // @route   GET /api/caregivers
@@ -29,9 +33,10 @@ const getAllCareGivers = async (req, res, next) => {
     const query = {};
 
     if (search) {
+      const safeSearch = escapeRegex(String(search).slice(0, 100));
       query.$or = [
-        { name: { $regex: search, $options: "i" } },
-        { email: { $regex: search, $options: "i" } },
+        { name: { $regex: safeSearch, $options: "i" } },
+        { email: { $regex: safeSearch, $options: "i" } },
       ];
     }
     if (skill) query.skills = skill;
@@ -86,12 +91,10 @@ const getCareGiverById = async (req, res, next) => {
 // @access  Private
 const createCareGiver = async (req, res, next) => {
   try {
-    console.log("\n=== CREATE CARE GIVER ===");
     const { address } = req.body;
 
     // Normalize time off dates to UTC midnight
     if (req.body.timeOff && Array.isArray(req.body.timeOff)) {
-      console.log("⏰ Normalizing time off dates to UTC...");
       req.body.timeOff = req.body.timeOff.map((timeOff) => {
         const startDate = new Date(timeOff.startDate);
         startDate.setUTCHours(0, 0, 0, 0);
@@ -105,15 +108,6 @@ const createCareGiver = async (req, res, next) => {
           reason: timeOff.reason || "",
         };
       });
-
-      console.log(
-        " Normalized time off:",
-        req.body.timeOff.map((to) => ({
-          start: to.startDate.toISOString().split("T")[0],
-          end: to.endDate.toISOString().split("T")[0],
-          reason: to.reason,
-        })),
-      );
     }
 
     // GEOCODE WITH FALLBACK
@@ -123,37 +117,22 @@ const createCareGiver = async (req, res, next) => {
 
       if (geocodeAddress && process.env.MAPBOX_ACCESS_TOKEN) {
         try {
-          console.log("🗺️ Geocoding:", fullAddress);
           const coordinates = await geocodeAddress(fullAddress);
           req.body.coordinates = coordinates;
-          console.log(" Geocoded successfully");
+          logger.debug("Geocoded address", { address: fullAddress });
         } catch (geoError) {
-          console.log(" Geocoding failed:", geoError.message);
-          console.log("📍 Using default coordinates (London)");
-          req.body.coordinates = {
-            type: "Point",
-            coordinates: [-0.1276, 51.5074],
-          };
+          logger.warn("Geocoding failed, using default coordinates", { error: geoError.message });
+          req.body.coordinates = { type: "Point", coordinates: [-0.1276, 51.5074] };
         }
       } else {
-        console.log("📍 No geocoding service - using default coordinates");
-        req.body.coordinates = {
-          type: "Point",
-          coordinates: [-0.1276, 51.5074],
-        };
+        req.body.coordinates = { type: "Point", coordinates: [-0.1276, 51.5074] };
       }
     } else {
-      console.log("📍 No address - using default coordinates");
-      req.body.coordinates = {
-        type: "Point",
-        coordinates: [-0.1276, 51.5074],
-      };
+      req.body.coordinates = { type: "Point", coordinates: [-0.1276, 51.5074] };
     }
 
-    // CREATE CARE GIVER
-    console.log(" Creating care giver...");
     const careGiver = await CareGiver.create(req.body);
-    console.log(" Created:", careGiver._id);
+    logger.info("Care giver created", { id: careGiver._id });
 
     // AUTO-SYNC AVAILABILITY
     if (careGiver.availability && careGiver.availability.length > 0) {
@@ -167,10 +146,24 @@ const createCareGiver = async (req, res, next) => {
           notes: "Auto-created with care giver",
           version: 1,
         });
-        console.log(" Availability synced");
       } catch (availError) {
-        console.log(" Availability sync failed:", availError.message);
+        logger.warn("Availability sync failed on create", { error: availError.message });
       }
+    }
+
+    const now = new Date();
+    const rangeStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const rangeEnd = new Date(rangeStart);
+    rangeEnd.setUTCDate(rangeEnd.getUTCDate() + 8 * 7);
+    try {
+      const jobQueueService = require("../services/jobQueueService");
+      await jobQueueService.enqueue(req.user._id, "schedule_bulk", {
+        careReceiverIds: null,
+        startDate: rangeStart.toISOString(),
+        endDate: rangeEnd.toISOString(),
+      });
+    } catch (enqueueErr) {
+      logger.error("Enqueue schedule_bulk after care giver create failed", { error: enqueueErr.message });
     }
 
     res.status(201).json({
@@ -179,7 +172,7 @@ const createCareGiver = async (req, res, next) => {
       message: "Care giver created successfully",
     });
   } catch (error) {
-    console.error(" ERROR:", error.message);
+    logger.error("createCareGiver failed", { error: error.message });
 
     if (error.name === "ValidationError") {
       const errors = Object.values(error.errors).map((e) => e.message);
@@ -244,12 +237,7 @@ const updateCareGiver = async (req, res, next) => {
         };
       });
 
-      console.log(" Normalized time off dates:");
-      req.body.timeOff.forEach((to, idx) => {
-        console.log(
-          `   ${idx + 1}. ${to.startDate.toISOString()} → ${to.endDate.toISOString()} (${to.reason})`,
-        );
-      });
+      logger.debug("Time off dates normalized", { count: req.body.timeOff.length });
     }
 
     const { address } = req.body;
@@ -269,7 +257,7 @@ const updateCareGiver = async (req, res, next) => {
           const coordinates = await geocodeAddress(fullAddress);
           req.body.coordinates = coordinates;
         } catch (geoError) {
-          console.log("Geocoding failed, using default coordinates");
+          logger.warn("Geocoding failed on update", { error: geoError.message });
           req.body.coordinates = careGiver.coordinates || {
             type: "Point",
             coordinates: [-0.1276, 51.5074],
@@ -302,7 +290,6 @@ const updateCareGiver = async (req, res, next) => {
           if (req.body.timeOff) existing.timeOff = req.body.timeOff;
           existing.notes = "Updated with care giver";
           await existing.save();
-          console.log(" Availability updated");
         } else {
           await Availability.create({
             careGiver: careGiver._id,
@@ -313,10 +300,9 @@ const updateCareGiver = async (req, res, next) => {
             notes: "Auto-created on update",
             version: 1,
           });
-          console.log(" Availability created");
         }
       } catch (availError) {
-        console.log("Availability sync error:", availError.message);
+        logger.warn("Availability sync error on update", { error: availError.message });
       }
     }
 
@@ -342,10 +328,25 @@ const updateCareGiver = async (req, res, next) => {
             }
           );
         }
-        console.log(" Appointments in time off periods marked for reassignment");
+        logger.info("Appointments in time off periods marked for reassignment", { careGiverId: careGiver._id });
       } catch (invalidateError) {
-        console.log("Appointment invalidation error:", invalidateError.message);
+        logger.warn("Appointment invalidation error", { error: invalidateError.message });
       }
+    }
+
+    const now = new Date();
+    const rangeStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const rangeEnd = new Date(rangeStart);
+    rangeEnd.setUTCDate(rangeEnd.getUTCDate() + 8 * 7);
+    try {
+      const jobQueueService = require("../services/jobQueueService");
+      await jobQueueService.enqueue(req.user._id, "schedule_bulk", {
+        careReceiverIds: null,
+        startDate: rangeStart.toISOString(),
+        endDate: rangeEnd.toISOString(),
+      });
+    } catch (enqueueErr) {
+      logger.error("Enqueue schedule_bulk after care giver update failed", { error: enqueueErr.message });
     }
 
     res.json({
@@ -422,7 +423,7 @@ const getCareGiverSchedule = async (req, res, next) => {
   try {
     const { startDate, endDate } = req.query;
 
-    console.log(`\n[CG Schedule] Fetching schedule for CG: ${req.params.id}`);
+    logger.debug("Fetching care giver schedule", { id: req.params.id });
 
     const careGiver = await CareGiver.findById(req.params.id);
     if (!careGiver) {
@@ -452,8 +453,6 @@ const getCareGiverSchedule = async (req, res, next) => {
       };
     }
 
-    console.log(`[CG Schedule] Query:`, JSON.stringify(query));
-
     // Fetch appointments
     const appointments = await Appointment.find(query)
       .populate("careReceiver", "name phone address")
@@ -461,9 +460,6 @@ const getCareGiverSchedule = async (req, res, next) => {
       .populate("secondaryCareGiver", "name email phone")
       .sort({ date: 1, startTime: 1 });
 
-    console.log(`[CG Schedule] Found ${appointments.length} appointments`);
-
-    // Log which appointments are primary vs secondary
     const primaryCount = appointments.filter(
       (apt) => apt.careGiver && apt.careGiver._id.toString() === req.params.id,
     ).length;
@@ -472,10 +468,6 @@ const getCareGiverSchedule = async (req, res, next) => {
         apt.secondaryCareGiver &&
         apt.secondaryCareGiver._id.toString() === req.params.id,
     ).length;
-
-    console.log(
-      `[CG Schedule] Primary: ${primaryCount}, Secondary: ${secondaryCount}`,
-    );
 
     res.json({
       success: true,
@@ -490,7 +482,7 @@ const getCareGiverSchedule = async (req, res, next) => {
       },
     });
   } catch (error) {
-    console.error("[CG Schedule] Error:", error);
+    logger.error("getCareGiverSchedule failed", { id: req.params.id, error: error.message });
     next(error);
   }
 };
