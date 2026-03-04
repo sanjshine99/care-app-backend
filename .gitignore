@@ -1,128 +1,254 @@
 # Dependencies
+
 node_modules/
+
 npm-debug.log*
+
 yarn-debug.log*
+
 yarn-error.log*
+
 package-lock.json
+
 yarn.lock
+
 pnpm-lock.yaml
 
+
+
 # Environment variables
-.env
-.env.local
+
+
+
 .env.development.local
+
 .env.test.local
+
 .env.production.local
 
+
+
 # IDE
+
 .vscode/
+
 .idea/
+
 *.swp
+
 *.swo
+
 *.sublime-project
+
 *.sublime-workspace
 
+
+
 # OS
+
 .DS_Store
+
 Thumbs.db
+
 desktop.ini
 
+
+
 # Logs
+
 logs/
+
 *.log
+
 npm-debug.log*
+
 yarn-debug.log*
+
 yarn-error.log*
 
+
+
 # Testing
+
 coverage/
+
 .nyc_output/
+
 *.lcov
 
+
+
 # Build
+
 dist/
+
 build/
+
 out/
+
+
 
 # Temporary files
+
 tmp/
+
 temp/
+
 *.tmp
 
+
+
 # Database
+
 *.db
+
 *.sqlite
+
 *.sqlite3
 
+
+
 # Uploads
+
 uploads/
+
 public/uploads/
 
+
+
 # Production files (keep .env.production for frontend)
+
 # But NOT .env (backend secrets)
 
+
+
 # PM2
+
 .pm2/
+
 pids/
+
 *.pid
+
 *.seed
+
 *.pid.lock
 
+
+
 # Optional npm cache
+
 .npm
 
+
+
 # Optional eslint cache
+
 .eslintcache
 
+
+
 # Optional stylelint cache
+
 .stylelintcache
 
+
+
 # Microbundle cache
+
 .rpt2_cache/
+
 .rts2_cache_cjs/
+
 .rts2_cache_es/
+
 .rts2_cache_umd/
 
+
+
 # Optional REPL history
+
 .node_repl_history
 
+
+
 # Output of 'npm pack'
+
 *.tgz
 
+
+
 # Yarn Integrity file
+
 .yarn-integrity
 
+
+
 # parcel-bundler cache
+
 .cache
+
 .parcel-cache
 
+
+
 # Next.js build output
+
 .next/
+
 out/
 
+
+
 # Nuxt.js build / generate output
+
 .nuxt
+
 dist/
 
+
+
 # Gatsby files
+
 .cache/
+
 public/
 
+
+
 # Serverless directories
+
 .serverless/
 
+
+
 # FuseBox cache
+
 .fusebox/
 
+
+
 # DynamoDB Local files
+
 .dynamodb/
 
+
+
 # TernJS port file
+
 .tern-port
 
+
+
 # Stores VSCode versions used for testing
+
 .vscode-test
 
+
+
 # Diagnostic scripts (optional - uncomment if you don't want them in git)
+
 # *diagnostic*.js
+
 # *test-*.js
+config.bat
