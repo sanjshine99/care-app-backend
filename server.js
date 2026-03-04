@@ -17,9 +17,7 @@ const socketService = require("./services/socketService");
 const REQUIRED_ENV_VARS = ["MONGODB_URI", "JWT_SECRET"];
 const missingVars = REQUIRED_ENV_VARS.filter((key) => !process.env[key]);
 if (missingVars.length > 0) {
-  console.error(
-    `FATAL: Missing required environment variables: ${missingVars.join(", ")}`
-  );
+  console.error(`FATAL: Missing required environment variables: ${missingVars.join(", ")}`);
   process.exit(1);
 }
 
@@ -48,6 +46,7 @@ const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
   // Add your Render frontend URL here when deployed:
+  "https://care-platform-frontend.onrender.com",
   "https://care-app-frontend.onrender.com",
 ];
 
@@ -112,7 +111,10 @@ connectDB();
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 10,
-  message: { success: false, error: { message: "Too many attempts, please try again later.", code: "RATE_LIMIT_EXCEEDED" } },
+  message: {
+    success: false,
+    error: { message: "Too many attempts, please try again later.", code: "RATE_LIMIT_EXCEEDED" },
+  },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -120,7 +122,13 @@ const authLimiter = rateLimit({
 const scheduleLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: 3,
-  message: { success: false, error: { message: "Schedule generation rate limit exceeded. Please wait before retrying.", code: "RATE_LIMIT_EXCEEDED" } },
+  message: {
+    success: false,
+    error: {
+      message: "Schedule generation rate limit exceeded. Please wait before retrying.",
+      code: "RATE_LIMIT_EXCEEDED",
+    },
+  },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -128,7 +136,10 @@ const scheduleLimiter = rateLimit({
 const generalApiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 500,
-  message: { success: false, error: { message: "Too many requests, please slow down.", code: "RATE_LIMIT_EXCEEDED" } },
+  message: {
+    success: false,
+    error: { message: "Too many requests, please slow down.", code: "RATE_LIMIT_EXCEEDED" },
+  },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -260,13 +271,16 @@ const gracefulShutdown = (signal) => {
 
   server.close(() => {
     logger.info("HTTP server closed");
-    require("mongoose").connection.close(false).then(() => {
-      logger.info("MongoDB connection closed");
-      process.exit(0);
-    }).catch((err) => {
-      logger.error("MongoDB close error", { error: err?.message });
-      process.exit(1);
-    });
+    require("mongoose")
+      .connection.close(false)
+      .then(() => {
+        logger.info("MongoDB connection closed");
+        process.exit(0);
+      })
+      .catch((err) => {
+        logger.error("MongoDB close error", { error: err?.message });
+        process.exit(1);
+      });
   });
 
   setTimeout(() => {
