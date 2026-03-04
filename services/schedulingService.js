@@ -1,5 +1,5 @@
 // backend/services/schedulingService.js
-// CORRECTED - UTC timezone + Proper preferred days validation + Double-handed care
+// Uses scheduling/ services: TravelCalculator, VisitService, CaregiverService, AppointmentService
 
 const Availability = require("../models/Availability");
 const CareGiver = require("../models/CareGiver");
@@ -7,215 +7,15 @@ const CareReceiver = require("../models/CareReceiver");
 const Appointment = require("../models/Appointment");
 const settingsService = require("./settingsService");
 const { normalizeTimeToHHMM } = require("../utils/timeUtils");
+const TravelCalculator = require("./scheduling/TravelCalculator");
+const VisitService = require("./scheduling/VisitService");
+const CaregiverService = require("./scheduling/CaregiverService");
+const AppointmentService = require("./scheduling/AppointmentService");
 
-/**
- * Calculate travel time between two locations
- */
-async function calculateTravelTime(coords1, coords2) {
-  try {
-    const mapboxToken = process.env.MAPBOX_ACCESS_TOKEN;
+const calculateTravelTime = TravelCalculator.calculateTravelTime.bind(TravelCalculator);
+const calculateDistance = TravelCalculator.calculateDistance.bind(TravelCalculator);
 
-    if (!mapboxToken) {
-      console.warn("Mapbox token not found, using distance-based estimate");
-      return estimateTravelTimeFromDistance(coords1, coords2);
-    }
-
-    const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coords1[0]},${coords1[1]};${coords2[0]},${coords2[1]}?access_token=${mapboxToken}`;
-
-    const response = await fetch(url);
-    const data = await response.json();
-
-    if (data.routes && data.routes[0]) {
-      const durationSeconds = data.routes[0].duration;
-      return Math.ceil(durationSeconds / 60);
-    }
-
-    return estimateTravelTimeFromDistance(coords1, coords2);
-  } catch (error) {
-    console.error("Travel time calculation error:", error.message);
-    return estimateTravelTimeFromDistance(coords1, coords2);
-  }
-}
-
-/**
- * Estimate travel time from distance (fallback)
- */
-function estimateTravelTimeFromDistance(coords1, coords2) {
-  const distance = calculateDistance(coords1, coords2);
-  return Math.ceil((distance / 30) * 60);
-}
-
-/**
- * Calculate distance between two points in km
- */
-function calculateDistance(coords1, coords2) {
-  const [lon1, lat1] = coords1;
-  const [lon2, lat2] = coords2;
-
-  const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
-
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
-/**
- * FIXED: Check if a date matches the visit's schedule preferences
- * Uses UTC dates to avoid timezone issues
- *
- * @param {Date} checkDate - The date to check (as Date object)
- * @param {Object} visit - The visit object with daysOfWeek, recurrencePattern, etc.
- * @param {Date} careReceiverCreatedAt - When care receiver was created (for recurrence start)
- * @returns {boolean} - True if visit should occur on this date
- */
-function isDateInSchedule(
-  checkDate,
-  visit,
-  careReceiverCreatedAt,
-  careReceiverUpdatedAt,
-) {
-  const utcDay = checkDate.getUTCDay();
-  const dayNames = [
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-  ];
-  const dayOfWeek = dayNames[utcDay];
-
-  if (!visit.daysOfWeek || visit.daysOfWeek.length === 0) {
-    console.log(
-      `  Warning: No daysOfWeek defined for visit ${visit.visitNumber}, defaulting to all days`,
-    );
-    visit.daysOfWeek = dayNames;
-  }
-
-  if (!visit.daysOfWeek.includes(dayOfWeek)) {
-    return false;
-  }
-
-  const checkUTC = Date.UTC(
-    checkDate.getUTCFullYear(),
-    checkDate.getUTCMonth(),
-    checkDate.getUTCDate(),
-  );
-
-  const createdUTC = careReceiverCreatedAt
-    ? Date.UTC(
-        new Date(careReceiverCreatedAt).getUTCFullYear(),
-        new Date(careReceiverCreatedAt).getUTCMonth(),
-        new Date(careReceiverCreatedAt).getUTCDate(),
-      )
-    : 0;
-  const updatedUTC = careReceiverUpdatedAt
-    ? Date.UTC(
-        new Date(careReceiverUpdatedAt).getUTCFullYear(),
-        new Date(careReceiverUpdatedAt).getUTCMonth(),
-        new Date(careReceiverUpdatedAt).getUTCDate(),
-      )
-    : 0;
-  const receiverEffectiveStartUTC = Math.max(createdUTC, updatedUTC);
-
-  const effectiveStart = visit.recurrenceStartDate
-    ? new Date(visit.recurrenceStartDate)
-    : receiverEffectiveStartUTC
-      ? new Date(receiverEffectiveStartUTC)
-      : new Date();
-  const startUTC = Date.UTC(
-    effectiveStart.getUTCFullYear(),
-    effectiveStart.getUTCMonth(),
-    effectiveStart.getUTCDate(),
-  );
-  if (checkUTC < startUTC) {
-    return false;
-  }
-
-  if (visit.recurrenceEndDate) {
-    const endDate = new Date(visit.recurrenceEndDate);
-    const endUTC = Date.UTC(
-      endDate.getUTCFullYear(),
-      endDate.getUTCMonth(),
-      endDate.getUTCDate(),
-    );
-    if (checkUTC > endUTC) {
-      return false;
-    }
-  }
-
-  // Get recurrence pattern (default to weekly)
-  const recurrencePattern = visit.recurrencePattern || "weekly";
-  const recurrenceInterval = visit.recurrenceInterval || 1;
-
-  // Weekly pattern - day is already validated above, and we're on or after start
-  if (recurrencePattern === "weekly" && recurrenceInterval === 1) {
-    return true;
-  }
-
-  if (
-    recurrencePattern === "biweekly" ||
-    recurrencePattern === "monthly" ||
-    recurrencePattern === "custom"
-  ) {
-    const startDate = visit.recurrenceStartDate
-      ? new Date(visit.recurrenceStartDate)
-      : receiverEffectiveStartUTC
-        ? new Date(receiverEffectiveStartUTC)
-        : new Date();
-
-    // Normalize both dates to UTC midnight for accurate comparison
-    const startUTC = Date.UTC(
-      startDate.getUTCFullYear(),
-      startDate.getUTCMonth(),
-      startDate.getUTCDate(),
-    );
-
-    const checkUTC = Date.UTC(
-      checkDate.getUTCFullYear(),
-      checkDate.getUTCMonth(),
-      checkDate.getUTCDate(),
-    );
-
-    // Calculate difference in days
-    const daysDiff = Math.floor((checkUTC - startUTC) / (24 * 60 * 60 * 1000));
-
-    if (daysDiff < 0) {
-      return false; // Before start date
-    }
-
-    // For biweekly: check if it's the right week
-    if (recurrencePattern === "biweekly") {
-      const weeksDiff = Math.floor(daysDiff / 7);
-      return weeksDiff % recurrenceInterval === 0;
-    }
-
-    // For monthly: check if it's the right month interval
-    if (recurrencePattern === "monthly") {
-      const monthsDiff =
-        (checkDate.getUTCFullYear() - startDate.getUTCFullYear()) * 12 +
-        (checkDate.getUTCMonth() - startDate.getUTCMonth());
-      return monthsDiff >= 0 && monthsDiff % recurrenceInterval === 0;
-    }
-
-    // For custom: use days-based interval
-    if (recurrencePattern === "custom") {
-      return daysDiff % recurrenceInterval === 0;
-    }
-  }
-
-  // Default: if day matches and pattern is not recognized, allow it
-  return true;
-}
+const isDateInSchedule = VisitService.isDateInSchedule.bind(VisitService);
 
 /**
  * Check if care giver is available
@@ -236,7 +36,6 @@ async function isCareGiverAvailable(
 
   const settings = await settingsService.getSchedulingSettings();
   const travelTimeBuffer = settings.travelTimeBufferMinutes || 15;
-  const maxAppointmentsPerDay = settings.maxAppointmentsPerDay || 8;
 
   const careGiver = await CareGiver.findById(careGiverId);
   if (!careGiver || !careGiver.isActive) {
@@ -382,6 +181,7 @@ async function isCareGiverAvailable(
     .populate("careReceiver", "name coordinates")
     .sort({ startTime: 1 });
 
+  const maxAppointmentsPerDay = CaregiverService.getMaxAppointmentsPerDay(careGiver, settings);
   if (existingAppointments.length >= maxAppointmentsPerDay) {
     result.reason = `Already has ${existingAppointments.length} appointments (max ${maxAppointmentsPerDay})`;
     return result;
@@ -782,17 +582,48 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
         `\n[Schedule] ✓ Processing Visit ${visit.visitNumber} (${visit.preferredTime}) - matches schedule`,
       );
 
-      // Check if double-handed care required
       if (visit.doubleHanded) {
         console.log(`[Schedule] 🤝 DOUBLE-HANDED CARE REQUIRED`);
       }
 
-      // Find primary care giver
-      const primaryCGResult = await findBestCareGiver(
-        careReceiver,
-        visit,
-        currentDate,
-      );
+      let primaryCGResult = { careGiver: null, reason: "No care giver available at preferred time or within arrival window." };
+      let chosenStartTime = visit.preferredTime;
+      const bufferMin = visit.bufferFlexibilityMinutes ?? 0;
+
+      if (bufferMin > 0) {
+        const [prefH, prefM] = visit.preferredTime.split(":").map(Number);
+        const preferredMinutes = prefH * 60 + prefM;
+        const maxEndMinutes = 24 * 60 - (visit.duration || 0);
+        const candidateMinutes = [
+          preferredMinutes,
+          Math.max(0, preferredMinutes - bufferMin),
+          Math.min(maxEndMinutes, preferredMinutes + bufferMin),
+        ];
+        const uniqueMinutes = [...new Set(candidateMinutes)].sort((a, b) => a - b);
+
+        for (const startMins of uniqueMinutes) {
+          const h = Math.floor(startMins / 60);
+          const m = startMins % 60;
+          const candidateTime = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+          const result = await findBestCareGiver(
+            careReceiver,
+            { ...visit, preferredTime: candidateTime },
+            currentDate,
+          );
+          if (result.careGiver) {
+            primaryCGResult = result;
+            chosenStartTime = candidateTime;
+            break;
+          }
+        }
+      } else {
+        primaryCGResult = await findBestCareGiver(
+          careReceiver,
+          visit,
+          currentDate,
+        );
+        chosenStartTime = visit.preferredTime;
+      }
 
       if (!primaryCGResult.careGiver) {
         console.log(`[Schedule]  Failed: ${primaryCGResult.reason}`);
@@ -806,11 +637,10 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
 
       let secondaryCareGiver = null;
 
-      // Find SECOND care giver if double-handed
       if (visit.doubleHanded) {
         const secondaryCGResult = await findSecondaryCareGiver(
           careReceiver,
-          visit,
+          { ...visit, preferredTime: chosenStartTime },
           currentDate,
           primaryCGResult.careGiver._id,
         );
@@ -833,10 +663,10 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
         );
       }
 
-      const [hours, minutes] = visit.preferredTime.split(":").map(Number);
-      const endMinutes = minutes + visit.duration;
+      const [chosenHours, chosenMinutes] = chosenStartTime.split(":").map(Number);
+      const endMinutes = chosenMinutes + visit.duration;
       const endTime = normalizeTimeToHHMM(
-        `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`,
+        `${chosenHours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`,
       );
 
       // Normalize appointment date to UTC midnight
@@ -850,18 +680,13 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
       );
 
       try {
-        //  FIXED: Check for duplicate appointments before creating
-        const existingAppointment = await Appointment.findOne({
-          careReceiver: careReceiver._id,
-          date: utcAppointmentDate,
-          visitNumber: visit.visitNumber,
-          status: { $in: ["scheduled", "in_progress", "completed"] },
-        });
+        const existingAppointment = await AppointmentService.findExistingSlot(
+          careReceiver._id,
+          utcAppointmentDate,
+          visit.visitNumber,
+        );
 
         if (existingAppointment) {
-          console.log(
-            `⏭️  Skipping ${dayName} Visit ${visit.visitNumber} - appointment already exists`,
-          );
           continue;
         }
 
@@ -869,7 +694,7 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
           careReceiver: careReceiver._id,
           careGiver: primaryCGResult.careGiver._id,
           date: utcAppointmentDate,
-          startTime: normalizeTimeToHHMM(visit.preferredTime),
+          startTime: normalizeTimeToHHMM(chosenStartTime),
           endTime,
           duration: visit.duration,
           visitNumber: visit.visitNumber,
@@ -885,12 +710,11 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
           },
         };
 
-        // Add secondary care giver if double-handed
         if (secondaryCareGiver) {
           appointmentData.secondaryCareGiver = secondaryCareGiver._id;
         }
 
-        const appointment = await Appointment.create(appointmentData);
+        const appointment = await AppointmentService.create(appointmentData);
 
         scheduled.push(appointment);
 

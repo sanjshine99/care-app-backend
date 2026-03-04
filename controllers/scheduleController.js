@@ -16,23 +16,18 @@ const {
 const notificationService = require("../services/notificationService");
 const settingsService = require("../services/settingsService");
 const { normalizeTimeToHHMM } = require("../utils/timeUtils");
+const logger = require("../utils/logger");
 
 // =============================================================================
 // SCHEDULE GENERATION (POST ONLY)
 // =============================================================================
 
-// @desc    Generate schedule for care receiver(s)
+// @desc    Generate schedule for care receiver(s) - enqueues job, returns jobId
 // @route   POST /api/schedule/generate
 // @access  Private
 exports.generateSchedule = async (req, res, next) => {
-  console.log("\n========================================");
-  console.log("🟢 POST /schedule/generate CALLED");
-  console.log("========================================");
-  console.log("  THIS IS THE ONLY ENDPOINT THAT GENERATES");
-  console.log("Request body:", JSON.stringify(req.body, null, 2));
-  console.log("🔄 STARTING SCHEDULE GENERATION...");
-
   try {
+    const jobQueueService = require("../services/jobQueueService");
     const { careReceiverIds, careReceiverId, startDate, endDate } = req.body;
 
     if (!startDate || !endDate) {
@@ -45,14 +40,9 @@ exports.generateSchedule = async (req, res, next) => {
       });
     }
 
-    // FIXED: Set start to beginning of day, end to END of day (both UTC)
     const start = new Date(startDate);
-    start.setUTCHours(0, 0, 0, 0); // Start of day (UTC - avoids timezone shift)
-
-    const end = new Date(endDate + "T23:59:59.999Z"); // END of day (includes entire day)
-
-    console.log("Start date:", start.toISOString());
-    console.log("End date:", end.toISOString());
+    start.setUTCHours(0, 0, 0, 0);
+    const end = new Date(endDate + "T23:59:59.999Z");
 
     if (start > end) {
       return res.status(400).json({
@@ -64,50 +54,101 @@ exports.generateSchedule = async (req, res, next) => {
       });
     }
 
-    let results;
+    const job = await jobQueueService.enqueue(req.user._id, "schedule_bulk", {
+      careReceiverIds: careReceiverIds || null,
+      careReceiverId: careReceiverId || null,
+      startDate: start.toISOString(),
+      endDate: end.toISOString(),
+    });
 
-    if (careReceiverId) {
-      console.log(`📝 Generating for single care receiver: ${careReceiverId}`);
-      results = [await scheduleForCareReceiver(careReceiverId, start, end)];
-    } else if (careReceiverIds && careReceiverIds.length > 0) {
-      console.log(`📝 Generating for ${careReceiverIds.length} care receivers`);
-      results = await bulkSchedule(careReceiverIds, start, end);
-    } else {
-      console.log("📝 Generating for ALL active care receivers");
-      const allCareReceivers = await CareReceiver.find({ isActive: true });
-      const ids = allCareReceivers.map((cr) => cr._id.toString());
-      results = await bulkSchedule(ids, start, end);
-    }
+    logger.info("Schedule generation job enqueued", {
+      jobId: job._id,
+      userId: req.user?._id,
+    });
 
-    const summary = {
-      totalScheduled: results.reduce(
-        (sum, r) => sum + (r.scheduled?.length || 0),
-        0,
-      ),
-      totalFailed: results.reduce((sum, r) => sum + (r.failed?.length || 0), 0),
-      careReceiversProcessed: results.length,
-    };
-
-    console.log(" GENERATION COMPLETE");
-    console.log(`   Scheduled: ${summary.totalScheduled}`);
-    console.log(`   Failed: ${summary.totalFailed}`);
-    console.log("========================================\n");
-
-    // Create notification
-    try {
-      await notificationService.notifyScheduleGenerated(req.user?._id, summary);
-    } catch (notifError) {
-      console.error("Failed to create notification:", notifError.message);
-    }
-
-    res.json({
+    res.status(202).json({
       success: true,
-      data: { results, summary },
-      message: `Scheduled ${summary.totalScheduled} appointments, ${summary.totalFailed} failed`,
+      data: {
+        jobId: job._id,
+        status: "queued",
+        message: "Schedule generation started. Poll GET /api/schedule/jobs/:jobId for progress.",
+      },
     });
   } catch (error) {
-    console.error(" Error in generateSchedule:", error);
-    console.log("========================================\n");
+    logger.error("Schedule generation enqueue failed", { error: error.message });
+    next(error);
+  }
+};
+
+// @desc    Get job progress and result
+// @route   GET /api/schedule/jobs/:jobId
+// @access  Private
+exports.getJobProgress = async (req, res, next) => {
+  try {
+    const jobQueueService = require("../services/jobQueueService");
+    const job = await jobQueueService.getById(req.params.jobId);
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        error: { message: "Job not found", code: "JOB_NOT_FOUND" },
+      });
+    }
+    if (job.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        error: { message: "Forbidden", code: "FORBIDDEN" },
+      });
+    }
+    res.json({
+      success: true,
+      data: {
+        jobId: job._id,
+        type: job.type,
+        status: job.status,
+        progressPercent: job.progressPercent ?? 0,
+        totalSteps: job.totalSteps,
+        completedSteps: job.completedSteps,
+        resultSummary: job.resultSummary,
+        errorMessage: job.errorMessage,
+        createdAt: job.createdAt,
+        startedAt: job.startedAt,
+        finishedAt: job.finishedAt,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get active scheduling jobs for current user (queued or running)
+// @route   GET /api/schedule/jobs/active
+// @access  Private
+exports.getActiveJobs = async (req, res, next) => {
+  try {
+    const jobQueueService = require("../services/jobQueueService");
+    const jobs = await jobQueueService.getActiveByUserId(req.user._id);
+    const schedulingInProgress = jobs.map((job) => {
+      const payload = job.payload || {};
+      const careReceiverId = payload.careReceiverId || payload.careReceiverIds?.[0];
+      return {
+        jobId: job._id,
+        type: job.type,
+        status: job.status,
+        careReceiverId: careReceiverId?.toString?.() || careReceiverId,
+        startDate: payload.startDate,
+        endDate: payload.endDate,
+        startedAt: job.startedAt,
+        createdAt: job.createdAt,
+      };
+    });
+    res.json({
+      success: true,
+      data: {
+        jobs,
+        schedulingInProgress,
+      },
+    });
+  } catch (error) {
     next(error);
   }
 };
@@ -120,12 +161,6 @@ exports.generateSchedule = async (req, res, next) => {
 // @route   GET /api/schedule/appointments
 // @access  Private
 exports.getAllAppointments = async (req, res, next) => {
-  console.log("\n========================================");
-  console.log("🔵 GET /schedule/appointments CALLED");
-  console.log("========================================");
-  console.log("Query params:", req.query);
-  console.log("  THIS ENDPOINT ONLY FETCHES - NO GENERATION");
-
   try {
     const {
       startDate,
@@ -228,15 +263,39 @@ exports.getUnscheduled = async (req, res, next) => {
       Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
     );
 
+    const jobQueueService = require("../services/jobQueueService");
+    const activeJobs = await jobQueueService.getActiveByUserId(req.user._id);
+    const schedulingInProgress = [];
+    for (const job of activeJobs) {
+      const payload = job.payload || {};
+      const ids = payload.careReceiverId
+        ? [payload.careReceiverId]
+        : payload.careReceiverIds || [];
+      for (const id of ids) {
+        if (id) {
+          schedulingInProgress.push({
+            jobId: job._id,
+            careReceiverId: id.toString(),
+            startedAt: job.startedAt,
+          });
+        }
+      }
+    }
+
     console.log("📥 Calculating unscheduled appointments...", skipReasons ? "(summaryOnly)" : "");
 
-    const careReceivers = await CareReceiver.find({ isActive: true }).lean();
+    // Select only the fields needed for unscheduled calculation to reduce memory usage
+    const careReceivers = await CareReceiver.find({ isActive: true })
+      .select("_id name dailyVisits genderPreference address coordinates createdAt updatedAt")
+      .lean();
     const careReceiverIds = careReceivers.map((cr) => cr._id);
 
     const allAppointments = await Appointment.find({
       careReceiver: { $in: careReceiverIds },
       date: { $gte: start, $lte: end },
-    }).lean();
+    })
+      .select("_id careReceiver date visitNumber status")
+      .lean();
 
     const appointmentsByCr = new Map();
     allAppointments.forEach((apt) => {
@@ -367,6 +426,7 @@ exports.getUnscheduled = async (req, res, next) => {
       data: {
         unscheduled,
         total: unscheduled.length,
+        schedulingInProgress,
       },
     });
   } catch (error) {
@@ -1445,6 +1505,8 @@ exports.validateSchedule = async (req, res, next) => {
 
 module.exports = {
   generateSchedule: exports.generateSchedule,
+  getJobProgress: exports.getJobProgress,
+  getActiveJobs: exports.getActiveJobs,
   getAllAppointments: exports.getAllAppointments,
   getUnscheduled: exports.getUnscheduled,
   getScheduleStats: exports.getScheduleStats,

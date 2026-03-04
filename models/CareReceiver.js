@@ -169,6 +169,16 @@ const careReceiverSchema = new mongoose.Schema(
           max: 5,
           default: 3,
         },
+        bufferFlexibilityMinutes: {
+          type: Number,
+          min: 0,
+          max: 60,
+          default: 0,
+        },
+        startDate: {
+          type: Date,
+          default: null,
+        },
         notes: {
           type: String,
           maxlength: [300, "Notes cannot exceed 300 characters"],

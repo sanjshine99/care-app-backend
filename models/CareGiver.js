@@ -88,6 +88,12 @@ const careGiverSchema = new mongoose.Schema(
       min: [1, 'Must handle at least 1 care receiver'],
       max: [20, 'Cannot exceed 20 care receivers'],
     },
+    maxAppointmentsPerDay: {
+      type: Number,
+      min: 1,
+      max: 20,
+      default: null,
+    },
     availability: [
       {
         dayOfWeek: {

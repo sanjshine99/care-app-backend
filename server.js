@@ -4,7 +4,24 @@ const helmet = require("helmet");
 const cookieParser = require("cookie-parser");
 const { Server } = require("socket.io");
 const http = require("http");
+const jwt = require("jsonwebtoken");
+const rateLimit = require("express-rate-limit");
+const compression = require("compression");
 require("dotenv").config();
+const logger = require("./utils/logger");
+const socketService = require("./services/socketService");
+
+// ========================================
+// STARTUP ENV VALIDATION
+// ========================================
+const REQUIRED_ENV_VARS = ["MONGODB_URI", "JWT_SECRET"];
+const missingVars = REQUIRED_ENV_VARS.filter((key) => !process.env[key]);
+if (missingVars.length > 0) {
+  console.error(
+    `FATAL: Missing required environment variables: ${missingVars.join(", ")}`
+  );
+  process.exit(1);
+}
 
 const connectDB = require("./config/database");
 const errorHandler = require("./middleware/errorHandler");
@@ -63,15 +80,63 @@ const io = new Server(server, {
   cors: corsOptions,
 });
 
+// ========================================
+// SOCKET.IO JWT AUTHENTICATION MIDDLEWARE
+// ========================================
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token;
+  if (!token) {
+    return next(new Error("Unauthorized: No token provided"));
+  }
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    socket.userId = decoded.id;
+    next();
+  } catch {
+    next(new Error("Unauthorized: Invalid token"));
+  }
+});
+
 // Make io accessible to routes
 app.set("io", io);
+
+// Expose io to services that run outside the request cycle (e.g. background schedule)
+socketService.init(io);
 
 // Connect to MongoDB
 connectDB();
 
 // ========================================
+// RATE LIMITING
+// ========================================
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10,
+  message: { success: false, error: { message: "Too many attempts, please try again later.", code: "RATE_LIMIT_EXCEEDED" } },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const scheduleLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 3,
+  message: { success: false, error: { message: "Schedule generation rate limit exceeded. Please wait before retrying.", code: "RATE_LIMIT_EXCEEDED" } },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const generalApiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 500,
+  message: { success: false, error: { message: "Too many requests, please slow down.", code: "RATE_LIMIT_EXCEEDED" } },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ========================================
 // MIDDLEWARE
 // ========================================
+app.use(compression()); // Gzip/deflate responses — reduces payload size 60-80%
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
@@ -83,35 +148,18 @@ app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(cookieParser());
 
 // Request logging
-if (process.env.NODE_ENV === "development") {
-  app.use((req, res, next) => {
-    console.log(`${req.method} ${req.path}`);
-    next();
-  });
-} else {
-  // Production logging (less verbose)
-  app.use((req, res, next) => {
-    if (req.path !== "/health") {
-      console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
-    }
-    next();
-  });
-}
+app.use((req, res, next) => {
+  if (req.path !== "/health") {
+    logger.http(`${req.method} ${req.path}`);
+  }
+  next();
+});
 
 // ========================================
 // HEALTH CHECK ENDPOINT (REQUIRED FOR RENDER)
 // ========================================
 app.get("/health", (req, res) => {
-  res.status(200).json({
-    status: "ok",
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    environment: process.env.NODE_ENV || "development",
-    mongodb:
-      require("mongoose").connection.readyState === 1
-        ? "connected"
-        : "disconnected",
-  });
+  res.status(200).json({ status: "ok" });
 });
 
 // Root endpoint
@@ -131,9 +179,15 @@ app.get("/", (req, res) => {
 // ========================================
 // API ROUTES
 // ========================================
-app.use("/api/auth", authRoutes);
+// Apply general rate limit to all API routes
+app.use("/api/", generalApiLimiter);
+
+// Specific stricter limits applied inline with route registration
+app.use("/api/auth", authLimiter, authRoutes);
 app.use("/api/caregivers", careGiverRoutes);
 app.use("/api/carereceivers", careReceiverRoutes);
+// Apply strict limiter to schedule generation before the route handler
+app.use("/api/schedule/generate", scheduleLimiter);
 app.use("/api/schedule", scheduleRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/settings", settingsRoutes);
@@ -164,16 +218,15 @@ app.use(errorHandler);
 // SOCKET.IO
 // ========================================
 io.on("connection", (socket) => {
-  console.log("✓ Client connected:", socket.id);
+  logger.info("Socket connected", { socketId: socket.id, userId: socket.userId });
 
-  // Join user-specific room for targeted notifications
-  socket.on("join", (userId) => {
-    socket.join(userId);
-    console.log(`✓ User ${userId} joined their room`);
-  });
+  // Automatically join the authenticated user's own room.
+  // socket.userId is set by the JWT auth middleware above — clients cannot
+  // join arbitrary rooms or receive other users' notifications.
+  socket.join(socket.userId);
 
   socket.on("disconnect", () => {
-    console.log("✗ Client disconnected:", socket.id);
+    logger.info("Socket disconnected", { socketId: socket.id });
   });
 });
 
@@ -184,61 +237,54 @@ const PORT = process.env.PORT || 5000;
 const HOST = process.env.NODE_ENV === "production" ? "0.0.0.0" : "localhost";
 
 server.listen(PORT, HOST, () => {
-  console.log("\n" + "=".repeat(50));
-  console.log("🚀 SERVER STARTED");
-  console.log("=".repeat(50));
-  console.log(`📍 Environment: ${process.env.NODE_ENV || "development"}`);
-  console.log(`🌐 Port: ${PORT}`);
-  console.log(
-    `🔗 API: http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}/api`,
-  );
-  console.log(
-    `💚 Health: http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}/health`,
-  );
-  console.log(
-    `🗄️  MongoDB: ${require("mongoose").connection.readyState === 1 ? "✓ Connected" : "⏳ Connecting..."}`,
-  );
-  console.log("=".repeat(50) + "\n");
+  logger.info("Server started", {
+    env: process.env.NODE_ENV || "development",
+    port: PORT,
+    api: `http://${HOST === "0.0.0.0" ? "localhost" : HOST}:${PORT}/api`,
+  });
+  const scheduleJobWorker = require("./workers/scheduleJobWorker");
+  scheduleJobWorker.start();
+  const scheduleNotificationService = require("./services/scheduleNotificationService");
+  scheduleNotificationService.start();
 });
 
 // ========================================
 // GRACEFUL SHUTDOWN
 // ========================================
 const gracefulShutdown = (signal) => {
-  console.log(`\n${signal} signal received: closing HTTP server`);
+  logger.info(`${signal} received — shutting down`);
+  try {
+    const scheduleJobWorker = require("./workers/scheduleJobWorker");
+    scheduleJobWorker.stop();
+  } catch (_) {}
 
   server.close(() => {
-    console.log("HTTP server closed");
-
-    // Close database connections
-    require("mongoose").connection.close(false, () => {
-      console.log("MongoDB connection closed");
+    logger.info("HTTP server closed");
+    require("mongoose").connection.close(false).then(() => {
+      logger.info("MongoDB connection closed");
       process.exit(0);
+    }).catch((err) => {
+      logger.error("MongoDB close error", { error: err?.message });
+      process.exit(1);
     });
   });
 
-  // Force close after 10 seconds
   setTimeout(() => {
-    console.error(
-      "Could not close connections in time, forcefully shutting down",
-    );
+    logger.error("Forced shutdown after timeout");
     process.exit(1);
   }, 10000);
 };
 
-// Handle shutdown signals
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
-// Handle unhandled promise rejections
 process.on("unhandledRejection", (err) => {
-  console.error(" Unhandled Rejection:", err);
+  logger.error("Unhandled Rejection", { error: err?.message, stack: err?.stack });
   gracefulShutdown("UNHANDLED_REJECTION");
 });
 
-// Handle uncaught exceptions
 process.on("uncaughtException", (err) => {
-  console.error(" Uncaught Exception:", err);
+  logger.error("Uncaught Exception", { error: err?.message, stack: err?.stack });
   gracefulShutdown("UNCAUGHT_EXCEPTION");
 });
 

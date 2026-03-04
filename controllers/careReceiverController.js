@@ -3,65 +3,12 @@
 
 const CareReceiver = require("../models/CareReceiver");
 const { geocodeAddress } = require("../services/mapboxService");
-const { scheduleForCareReceiver } = require("../services/schedulingService");
 const {
   notifyRecurringVisitsAdded,
-  notifyScheduleGeneratedForCareReceiver,
-  notifyScheduleGenerationFailed,
 } = require("../services/notificationService");
+const logger = require("../utils/logger");
 
-const AUTO_SCHEDULE_MONTHS = 3;
-const SCHEDULE_RUN_DEBOUNCE_MS = 15000;
-
-const lastScheduleRunByCareReceiver = new Map();
-
-async function runBackgroundSchedule(
-  careReceiverId,
-  adminUserId,
-  careReceiverName
-) {
-  const idStr = careReceiverId?.toString?.() || String(careReceiverId);
-  const lastRun = lastScheduleRunByCareReceiver.get(idStr);
-  if (lastRun && Date.now() - lastRun < SCHEDULE_RUN_DEBOUNCE_MS) {
-    console.log(
-      " Skipping duplicate schedule run for same care receiver (debounce)"
-    );
-    return;
-  }
-  lastScheduleRunByCareReceiver.set(idStr, Date.now());
-
-  const now = new Date();
-  const todayStart = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
-  );
-  const endDate = new Date(todayStart);
-  endDate.setUTCMonth(endDate.getUTCMonth() + AUTO_SCHEDULE_MONTHS);
-  try {
-    const { scheduled, failed } = await scheduleForCareReceiver(
-      careReceiverId,
-      todayStart,
-      endDate
-    );
-    console.log(
-      ` Auto-scheduled appointments for ${todayStart.toISOString().split("T")[0]} to ${endDate.toISOString().split("T")[0]}`
-    );
-    await notifyScheduleGeneratedForCareReceiver(
-      adminUserId,
-      careReceiverId,
-      careReceiverName,
-      scheduled.length,
-      failed.length
-    );
-  } catch (scheduleErr) {
-    console.error(" Auto-schedule failed:", scheduleErr.message);
-    await notifyScheduleGenerationFailed(
-      adminUserId,
-      careReceiverId,
-      careReceiverName,
-      scheduleErr.message
-    );
-  }
-}
+const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // @desc    Get all care receivers
 // @route   GET /api/carereceivers
@@ -80,9 +27,10 @@ exports.getAllCareReceivers = async (req, res, next) => {
     // Build query
     const query = {};
 
-    // Search by name
+    // Search by name — escape input to prevent ReDoS attacks
     if (search) {
-      query.name = { $regex: search, $options: "i" };
+      const safeSearch = escapeRegex(String(search).slice(0, 100));
+      query.name = { $regex: safeSearch, $options: "i" };
     }
 
     // Filter by status
@@ -167,9 +115,6 @@ exports.getCareReceiverById = async (req, res, next) => {
 // @access  Private
 exports.createCareReceiver = async (req, res, next) => {
   try {
-    console.log("🚀 CREATE CARE RECEIVER START");
-    console.log("📦 Request body:", JSON.stringify(req.body, null, 2));
-
     // Validate required fields
     const requiredFields = [
       "name",
@@ -191,7 +136,6 @@ exports.createCareReceiver = async (req, res, next) => {
     }
 
     // Geocode address
-    console.log("🗺️  Geocoding address...");
     const { street, city, postcode } = req.body.address;
     const fullAddress = `${street}, ${city} ${postcode}, United Kingdom`;
 
@@ -201,9 +145,8 @@ exports.createCareReceiver = async (req, res, next) => {
         type: "Point",
         coordinates: [coordinates.longitude, coordinates.latitude],
       };
-      console.log(" Geocoded:", coordinates);
     } catch (geocodeError) {
-      console.error(" Geocoding failed:", geocodeError.message);
+      logger.warn("Geocoding failed on create", { address: fullAddress, error: geocodeError.message });
       return res.status(400).json({
         success: false,
         error: {
@@ -226,18 +169,22 @@ exports.createCareReceiver = async (req, res, next) => {
             },
           });
         }
+        const buf = visit.bufferFlexibilityMinutes;
+        if (buf != null && (typeof buf !== "number" || buf < 0 || buf > 60)) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              message: "Arrival window (buffer flexibility) must be a number between 0 and 60",
+              code: "INVALID_BUFFER_FLEXIBILITY",
+            },
+          });
+        }
       }
     }
 
     // Create care receiver
     const careReceiver = await CareReceiver.create(req.body);
-    console.log(" Created! ID:", careReceiver._id);
-
-    // Verify it exists in DB
-    const verify = await CareReceiver.findById(careReceiver._id);
-    if (verify) {
-      console.log(" VERIFIED - Exists in DB!");
-    }
+    logger.info("Care receiver created", { id: careReceiver._id });
 
     // Populate preferred care giver if exists
     await careReceiver.populate("preferredCareGiver", "name email");
@@ -252,18 +199,13 @@ exports.createCareReceiver = async (req, res, next) => {
         message: "Care receiver created successfully",
         scheduleGenerationQueued: true,
       });
-      const adminUserId = req.user._id;
-      const careReceiverId = careReceiver._id;
-      const careReceiverName = careReceiver.name;
-      setImmediate(() => {
-        runBackgroundSchedule(
-          careReceiverId,
-          adminUserId,
-          careReceiverName,
-        ).catch((err) =>
-          console.error(" Background schedule error:", err.message)
-        );
-      });
+      const jobQueueService = require("../services/jobQueueService");
+      jobQueueService
+        .enqueue(req.user._id, "schedule_care_receiver", {
+          careReceiverId: careReceiver._id,
+          careReceiverName: careReceiver.name,
+        })
+        .catch((err) => logger.error("Enqueue schedule job failed", { error: err.message }));
     } else {
       res.status(201).json({
         success: true,
@@ -272,7 +214,7 @@ exports.createCareReceiver = async (req, res, next) => {
       });
     }
   } catch (error) {
-    console.error(" CREATE ERROR:", error);
+    logger.error("Create care receiver error", { error: error.message });
 
     if (error.name === "ValidationError") {
       const errors = Object.values(error.errors).map((err) => err.message);
@@ -293,7 +235,6 @@ exports.createCareReceiver = async (req, res, next) => {
 // @access  Private
 exports.updateCareReceiver = async (req, res, next) => {
   try {
-    console.log("🔄 UPDATE CARE RECEIVER:", req.params.id);
 
     let careReceiver = await CareReceiver.findById(req.params.id);
 
@@ -315,7 +256,6 @@ exports.updateCareReceiver = async (req, res, next) => {
         req.body.address.postcode !== careReceiver.address.postcode;
 
       if (addressChanged) {
-        console.log("🗺️  Address changed, re-geocoding...");
         const { street, city, postcode } = req.body.address;
         const fullAddress = `${street}, ${city} ${postcode}, United Kingdom`;
 
@@ -325,9 +265,8 @@ exports.updateCareReceiver = async (req, res, next) => {
             type: "Point",
             coordinates: [coordinates.longitude, coordinates.latitude],
           };
-          console.log(" Re-geocoded:", coordinates);
         } catch (geocodeError) {
-          console.error(" Re-geocoding failed:", geocodeError.message);
+          logger.warn("Re-geocoding failed on update", { address: fullAddress, error: geocodeError.message });
           return res.status(400).json({
             success: false,
             error: {
@@ -348,6 +287,16 @@ exports.updateCareReceiver = async (req, res, next) => {
             error: {
               message: "Visit duration must be between 15 and 120 minutes",
               code: "INVALID_DURATION",
+            },
+          });
+        }
+        const buf = visit.bufferFlexibilityMinutes;
+        if (buf != null && (typeof buf !== "number" || buf < 0 || buf > 60)) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              message: "Arrival window (buffer flexibility) must be a number between 0 and 60",
+              code: "INVALID_BUFFER_FLEXIBILITY",
             },
           });
         }
@@ -397,7 +346,7 @@ exports.updateCareReceiver = async (req, res, next) => {
       },
     ).populate("preferredCareGiver", "name email");
 
-    console.log(" Updated successfully");
+    logger.info("Care receiver updated", { id: req.params.id });
 
     if (changedVisitNumbers.length > 0) {
       const Appointment = require("../models/Appointment");
@@ -420,9 +369,11 @@ exports.updateCareReceiver = async (req, res, next) => {
           },
         }
       );
-      console.log(
-        ` Visit schedule changed - cancelled ${cancelResult.modifiedCount} appointment(s) (visit numbers: ${changedVisitNumbers.join(", ")})`
-      );
+      logger.info("Appointments cancelled after visit schedule change", {
+        careReceiverId: req.params.id,
+        modifiedCount: cancelResult.modifiedCount,
+        visitNumbers: changedVisitNumbers,
+      });
     }
 
     const hasRecurringVisits =
@@ -435,18 +386,13 @@ exports.updateCareReceiver = async (req, res, next) => {
         message: "Care receiver updated successfully",
         scheduleGenerationQueued: true,
       });
-      const adminUserId = req.user._id;
-      const careReceiverId = careReceiver._id;
-      const careReceiverName = careReceiver.name;
-      setImmediate(() => {
-        runBackgroundSchedule(
-          careReceiverId,
-          adminUserId,
-          careReceiverName,
-        ).catch((err) =>
-          console.error(" Background schedule error:", err.message)
-        );
-      });
+      const jobQueueService = require("../services/jobQueueService");
+      jobQueueService
+        .enqueue(req.user._id, "schedule_care_receiver", {
+          careReceiverId: careReceiver._id,
+          careReceiverName: careReceiver.name,
+        })
+        .catch((err) => logger.error("Enqueue schedule job failed", { error: err.message }));
     } else {
       res.json({
         success: true,
@@ -455,7 +401,7 @@ exports.updateCareReceiver = async (req, res, next) => {
       });
     }
   } catch (error) {
-    console.error(" UPDATE ERROR:", error);
+    logger.error("Update care receiver error", { error: error.message });
 
     if (error.name === "ValidationError") {
       const errors = Object.values(error.errors).map((err) => err.message);
@@ -476,8 +422,6 @@ exports.updateCareReceiver = async (req, res, next) => {
 // @access  Private
 exports.deleteCareReceiver = async (req, res, next) => {
   try {
-    console.log("🗑️  DELETE CARE RECEIVER:", req.params.id);
-
     const careReceiver = await CareReceiver.findById(req.params.id);
 
     if (!careReceiver) {
@@ -508,14 +452,14 @@ exports.deleteCareReceiver = async (req, res, next) => {
     }
 
     await CareReceiver.findByIdAndDelete(req.params.id);
-    console.log(" Deleted successfully");
+    logger.info("Care receiver deleted", { id: req.params.id });
 
     res.json({
       success: true,
       message: "Care receiver deleted successfully",
     });
   } catch (error) {
-    console.error(" DELETE ERROR:", error);
+    logger.error("Delete care receiver error", { error: error.message });
     next(error);
   }
 };

@@ -5,6 +5,11 @@ const express = require("express");
 const { protect } = require("../middleware/auth");
 const scheduleController = require("../controllers/scheduleController");
 const scheduleAnalysisController = require("../controllers/scheduleAnalysisController");
+const {
+  generateScheduleRules,
+  getUnscheduledRules,
+  validateScheduleRules,
+} = require("../middleware/validators/scheduleValidators");
 
 const router = express.Router();
 
@@ -12,9 +17,11 @@ const router = express.Router();
 router.use(protect);
 
 // ========================================
-// SCHEDULE GENERATION
+// SCHEDULE GENERATION (queue + progress)
 // ========================================
-router.post("/generate", scheduleController.generateSchedule);
+router.post("/generate", generateScheduleRules, scheduleController.generateSchedule);
+router.get("/jobs/active", scheduleController.getActiveJobs);
+router.get("/jobs/:jobId", scheduleController.getJobProgress);
 
 // ========================================
 // APPOINTMENTS
@@ -44,13 +51,13 @@ router.get(
 // SCHEDULE VALIDATION
 // ========================================
 // Validate schedule for conflicts
-router.post("/validate", protect, scheduleController.validateSchedule);
+router.post("/validate", validateScheduleRules, scheduleController.validateSchedule);
 
 // ========================================
 // UNSCHEDULED & ANALYSIS
 // ========================================
 // Get unscheduled appointments
-router.get("/unscheduled", scheduleController.getUnscheduled);
+router.get("/unscheduled", getUnscheduledRules, scheduleController.getUnscheduled);
 
 // Analyze why appointment couldn't be scheduled
 router.post(

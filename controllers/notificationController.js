@@ -2,6 +2,7 @@
 // Complete notification management
 
 const Notification = require("../models/Notification");
+const logger = require("../utils/logger");
 
 // @desc    Get all notifications for current user
 // @route   GET /api/notifications
@@ -37,11 +38,14 @@ exports.getAllNotifications = async (req, res, next) => {
     const sort = {};
     sort[sortBy] = sortOrder === "desc" ? -1 : 1;
 
+    // Cap limit to prevent full-collection scans from a single request
+    const safeLimit = Math.min(parseInt(limit) || 20, 100);
+
     // Get notifications
     const notifications = await Notification.find(query)
       .sort(sort)
-      .skip((page - 1) * limit)
-      .limit(parseInt(limit));
+      .skip((page - 1) * safeLimit)
+      .limit(safeLimit);
 
     const total = await Notification.countDocuments(query);
 
@@ -51,13 +55,14 @@ exports.getAllNotifications = async (req, res, next) => {
         notifications,
         pagination: {
           page: parseInt(page),
-          limit: parseInt(limit),
+          limit: safeLimit,
           total,
-          pages: Math.ceil(total / limit),
+          pages: Math.ceil(total / safeLimit),
         },
       },
     });
   } catch (error) {
+    logger.error("Get notifications error", { error: error.message });
     next(error);
   }
 };
@@ -74,6 +79,7 @@ exports.getUnreadCount = async (req, res, next) => {
       data: { count },
     });
   } catch (error) {
+    logger.error("Get unread count error", { error: error.message });
     next(error);
   }
 };
@@ -106,6 +112,7 @@ exports.markAsRead = async (req, res, next) => {
       message: "Notification marked as read",
     });
   } catch (error) {
+    logger.error("Mark as read error", { error: error.message });
     next(error);
   }
 };
@@ -138,6 +145,7 @@ exports.markAsCompleted = async (req, res, next) => {
       message: "Notification marked as completed",
     });
   } catch (error) {
+    logger.error("Mark as completed error", { error: error.message });
     next(error);
   }
 };
@@ -170,6 +178,7 @@ exports.archiveNotification = async (req, res, next) => {
       message: "Notification archived",
     });
   } catch (error) {
+    logger.error("Archive notification error", { error: error.message });
     next(error);
   }
 };
@@ -199,6 +208,7 @@ exports.deleteNotification = async (req, res, next) => {
       message: "Notification deleted",
     });
   } catch (error) {
+    logger.error("Delete notification error", { error: error.message });
     next(error);
   }
 };
@@ -234,6 +244,7 @@ exports.bulkAction = async (req, res, next) => {
       message: `${result.modifiedCount} notification(s) updated`,
     });
   } catch (error) {
+    logger.error("Bulk action error", { error: error.message });
     next(error);
   }
 };
@@ -264,6 +275,7 @@ exports.markAllAsRead = async (req, res, next) => {
       message: `${result.modifiedCount} notification(s) marked as read`,
     });
   } catch (error) {
+    logger.error("Mark all as read error", { error: error.message });
     next(error);
   }
 };
@@ -273,62 +285,55 @@ exports.markAllAsRead = async (req, res, next) => {
 // @access  Private
 exports.getStats = async (req, res, next) => {
   try {
-    const [total, unread, read, archived, byType, byPriority, actionRequired] =
-      await Promise.all([
-        Notification.countDocuments({ adminUser: req.user._id }),
-        Notification.countDocuments({
-          adminUser: req.user._id,
-          status: "unread",
-        }),
-        Notification.countDocuments({
-          adminUser: req.user._id,
-          status: "read",
-        }),
-        Notification.countDocuments({
-          adminUser: req.user._id,
-          status: "archived",
-        }),
-        Notification.aggregate([
-          { $match: { adminUser: req.user._id } },
-          { $group: { _id: "$type", count: { $sum: 1 } } },
-        ]),
-        Notification.aggregate([
-          { $match: { adminUser: req.user._id } },
-          { $group: { _id: "$priority", count: { $sum: 1 } } },
-        ]),
-        Notification.countDocuments({
-          adminUser: req.user._id,
-          actionRequired: true,
-          status: { $in: ["unread", "read"] },
-        }),
-      ]);
+    // Single $facet aggregation replaces 7 separate DB round-trips.
+    // All facets share one index scan on (adminUser, createdAt).
+    const [result] = await Notification.aggregate([
+      { $match: { adminUser: req.user._id } },
+      {
+        $facet: {
+          total: [{ $count: "count" }],
+          byStatus: [{ $group: { _id: "$status", count: { $sum: 1 } } }],
+          byType: [{ $group: { _id: "$type", count: { $sum: 1 } } }],
+          byPriority: [{ $group: { _id: "$priority", count: { $sum: 1 } } }],
+          actionRequired: [
+            {
+              $match: {
+                actionRequired: true,
+                status: { $in: ["unread", "read"] },
+              },
+            },
+            { $count: "count" },
+          ],
+        },
+      },
+    ]);
 
-    // Format aggregated data
+    // Flatten facet arrays into the original response shape
+    const statusMap = {};
+    (result?.byStatus ?? []).forEach((s) => { statusMap[s._id] = s.count; });
+
     const typeStats = {};
-    byType.forEach((item) => {
-      typeStats[item._id] = item.count;
-    });
+    (result?.byType ?? []).forEach((t) => { typeStats[t._id] = t.count; });
 
     const priorityStats = {};
-    byPriority.forEach((item) => {
-      priorityStats[item._id] = item.count;
-    });
+    (result?.byPriority ?? []).forEach((p) => { priorityStats[p._id] = p.count; });
 
     res.json({
       success: true,
       data: {
         stats: {
-          total,
-          unread,
-          read,
-          archived,
-          actionRequired,
+          total: result?.total?.[0]?.count ?? 0,
+          unread: statusMap.unread ?? 0,
+          read: statusMap.read ?? 0,
+          archived: statusMap.archived ?? 0,
+          actionRequired: result?.actionRequired?.[0]?.count ?? 0,
           byType: typeStats,
           byPriority: priorityStats,
         },
       },
     });
   } catch (error) {
+    logger.error("Get notification stats error", { error: error.message });
     next(error);
   }
 };
@@ -354,6 +359,7 @@ exports.createTestNotification = async (req, res, next) => {
       message: "Test notification created",
     });
   } catch (error) {
+    logger.error("Create test notification error", { error: error.message });
     next(error);
   }
 };

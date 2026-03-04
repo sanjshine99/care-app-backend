@@ -120,6 +120,11 @@ const appointmentSchema = new mongoose.Schema(
       type: Date,
       // When the conflict was detected
     },
+
+    travelBufferMinutesApplied: {
+      type: Number,
+      default: null,
+    },
     // ========================================
 
     // Completion details
