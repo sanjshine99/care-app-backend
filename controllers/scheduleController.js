@@ -790,48 +790,58 @@ exports.findAvailableForManual = async (req, res, next) => {
     const allCareGivers = await CareGiver.find({ isActive: true }).lean();
     console.log(`Found ${allCareGivers.length} active care givers`);
 
-    // STEP 3: Filter by skills (same as analyze)
-    let potentialCareGivers = allCareGivers;
-    if (requirements && requirements.length > 0) {
-      potentialCareGivers = allCareGivers.filter((cg) => {
-        const normalizedSkills = cg.skills.map((s) =>
-          s.toLowerCase().replace(/ /g, "_"),
-        );
-        const normalizedRequirements = requirements.map((r) =>
-          r.toLowerCase().replace(/ /g, "_"),
-        );
-        return normalizedRequirements.every((req) =>
-          normalizedSkills.includes(req),
-        );
-      });
-    }
-
-    // Gender filter (same as analyze and generation)
-    if (
-      careReceiver.genderPreference &&
-      careReceiver.genderPreference !== "no_preference"
-    ) {
-      potentialCareGivers = potentialCareGivers.filter(
-        (cg) =>
-          cg.gender &&
-          cg.gender.toLowerCase() ===
-            careReceiver.genderPreference.toLowerCase(),
-      );
-    }
-
-    // Double-handed: exclude singleHandedOnly caregivers
-    if (doubleHanded) {
-      potentialCareGivers = potentialCareGivers.filter(
-        (cg) => cg.singleHandedOnly !== true,
-      );
-    }
-
     const settings = await settingsService.getSchedulingSettings();
     const maxDistanceKm = settings.maxDistanceKm ?? 20;
 
-    // STEP 4: Check availability with same logic as analyze (isCareGiverAvailable)
+    const normalizedRequirements =
+      requirements && requirements.length > 0
+        ? requirements.map((r) => r.toLowerCase().replace(/ /g, "_"))
+        : [];
+    const hasGenderPreference =
+      careReceiver.genderPreference &&
+      careReceiver.genderPreference.toLowerCase() !== "no preference" &&
+      careReceiver.genderPreference.toLowerCase() !== "no_preference";
+
     const availableCareGivers = [];
-    for (const cg of potentialCareGivers) {
+    const unavailableCareGivers = [];
+
+    for (const cg of allCareGivers) {
+      if (normalizedRequirements.length > 0) {
+        const normalizedSkills = (cg.skills || []).map((s) =>
+          s.toLowerCase().replace(/ /g, "_"),
+        );
+        const hasAllSkills = normalizedRequirements.every((req) =>
+          normalizedSkills.includes(req),
+        );
+        if (!hasAllSkills) {
+          unavailableCareGivers.push({
+            careGiver: { ...cg, distance: null, travelTime: null },
+            reason: "Missing required skills",
+          });
+          continue;
+        }
+      }
+
+      if (hasGenderPreference) {
+        const cgGender = (cg.gender || "").toLowerCase();
+        const pref = careReceiver.genderPreference.toLowerCase();
+        if (cgGender !== pref) {
+          unavailableCareGivers.push({
+            careGiver: { ...cg, distance: null, travelTime: null },
+            reason: "Does not match gender preference",
+          });
+          continue;
+        }
+      }
+
+      if (doubleHanded && cg.singleHandedOnly === true) {
+        unavailableCareGivers.push({
+          careGiver: { ...cg, distance: null, travelTime: null },
+          reason: "Single-handed only (double-handed visit required)",
+        });
+        continue;
+      }
+
       const availabilityCheck = await isCareGiverAvailable(
         cg._id,
         appointmentDate,
@@ -841,7 +851,13 @@ exports.findAvailableForManual = async (req, res, next) => {
         null,
       );
 
-      if (!availabilityCheck.available) continue;
+      if (!availabilityCheck.available) {
+        unavailableCareGivers.push({
+          careGiver: { ...cg, distance: null, travelTime: null },
+          reason: availabilityCheck.reason || "Not available",
+        });
+        continue;
+      }
 
       let distance = null;
       if (
@@ -853,7 +869,13 @@ exports.findAvailableForManual = async (req, res, next) => {
           careReceiver.coordinates.coordinates,
         );
       }
-      if (distance != null && distance > maxDistanceKm) continue;
+      if (distance != null && distance > maxDistanceKm) {
+        unavailableCareGivers.push({
+          careGiver: { ...cg, distance, travelTime: null },
+          reason: `Outside max distance (${distance.toFixed(1)} km)`,
+        });
+        continue;
+      }
 
       availableCareGivers.push({
         ...cg,
@@ -864,6 +886,7 @@ exports.findAvailableForManual = async (req, res, next) => {
 
     console.log("\n--- FINAL RESULTS ---");
     console.log(`Total available: ${availableCareGivers.length} care givers`);
+    console.log(`Total unavailable: ${unavailableCareGivers.length} care givers`);
     if (availableCareGivers.length > 0) {
       console.log("Available care givers:");
       availableCareGivers.forEach((cg) => {
@@ -876,6 +899,7 @@ exports.findAvailableForManual = async (req, res, next) => {
       success: true,
       data: {
         availableCareGivers,
+        unavailableCareGivers,
         total: availableCareGivers.length,
         careReceiverPreferences: {
           genderPreference: careReceiver.genderPreference,
