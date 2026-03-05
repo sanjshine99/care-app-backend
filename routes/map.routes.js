@@ -5,6 +5,7 @@ const express = require("express");
 const { protect } = require("../middleware/auth");
 const {
   getAllLocations,
+  regeocodeAllLocations,
   calculateDistance,
   findCareGiversNearby,
   getRoute,
@@ -18,6 +19,7 @@ router.use(protect);
 
 // Location endpoints
 router.get("/locations", getAllLocations); // GET /api/map/locations
+router.post("/regeocode", regeocodeAllLocations); // POST /api/map/regeocode
 router.get("/today-appointments", getTodayAppointments); // GET /api/map/today-appointments
 
 // Calculation endpoints

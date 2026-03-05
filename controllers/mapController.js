@@ -6,18 +6,31 @@ const CareReceiver = require("../models/CareReceiver");
 const Appointment = require("../models/Appointment");
 const mapboxService = require("../services/mapboxService");
 
+function hasValidCoordinates(doc) {
+  const coords = doc?.coordinates?.coordinates;
+  return (
+    Array.isArray(coords) &&
+    coords.length >= 2 &&
+    Number.isFinite(coords[0]) &&
+    Number.isFinite(coords[1])
+  );
+}
+
+function toLocationCoords(doc) {
+  const [longitude, latitude] = doc.coordinates.coordinates;
+  return { longitude, latitude };
+}
+
 // @desc    Get all locations (care givers and care receivers)
 // @route   GET /api/map/locations
 // @access  Private
 exports.getAllLocations = async (req, res, next) => {
   try {
-    // Get all active care givers with coordinates
     const careGivers = await CareGiver.find({
       isActive: true,
       coordinates: { $exists: true, $ne: null },
     }).select("name email phone gender skills canDrive coordinates address");
 
-    // Get all active care receivers with coordinates
     const careReceivers = await CareReceiver.find({
       isActive: true,
       coordinates: { $exists: true, $ne: null },
@@ -25,9 +38,11 @@ exports.getAllLocations = async (req, res, next) => {
       "name email phone genderPreference dailyVisits coordinates address"
     );
 
-    // Format for frontend
+    const validCareGivers = careGivers.filter(hasValidCoordinates);
+    const validCareReceivers = careReceivers.filter(hasValidCoordinates);
+
     const locations = {
-      careGivers: careGivers.map((cg) => ({
+      careGivers: validCareGivers.map((cg) => ({
         id: cg._id,
         name: cg.name,
         email: cg.email,
@@ -35,24 +50,18 @@ exports.getAllLocations = async (req, res, next) => {
         gender: cg.gender,
         skills: cg.skills,
         canDrive: cg.canDrive,
-        coordinates: {
-          longitude: cg.coordinates.coordinates[0],
-          latitude: cg.coordinates.coordinates[1],
-        },
+        coordinates: toLocationCoords(cg),
         address: cg.address,
         type: "caregiver",
       })),
-      careReceivers: careReceivers.map((cr) => ({
+      careReceivers: validCareReceivers.map((cr) => ({
         id: cr._id,
         name: cr.name,
         email: cr.email,
         phone: cr.phone,
         genderPreference: cr.genderPreference,
         dailyVisits: cr.dailyVisits?.length || 0,
-        coordinates: {
-          longitude: cr.coordinates.coordinates[0],
-          latitude: cr.coordinates.coordinates[1],
-        },
+        coordinates: toLocationCoords(cr),
         address: cr.address,
         type: "carereceiver",
       })),
@@ -63,10 +72,89 @@ exports.getAllLocations = async (req, res, next) => {
       data: {
         locations,
         stats: {
-          totalCareGivers: careGivers.length,
-          totalCareReceivers: careReceivers.length,
-          total: careGivers.length + careReceivers.length,
+          totalCareGivers: validCareGivers.length,
+          totalCareReceivers: validCareReceivers.length,
+          total: validCareGivers.length + validCareReceivers.length,
         },
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+function buildFullAddress(address) {
+  if (!address?.street || !address?.city || !address?.postcode) return null;
+  return `${address.street}, ${address.city} ${address.postcode}, United Kingdom`;
+}
+
+// @desc    Re-geocode all care givers and care receivers with addresses (fix existing data)
+// @route   POST /api/map/regeocode
+// @access  Private
+exports.regeocodeAllLocations = async (req, res, next) => {
+  try {
+    let careGiversUpdated = 0;
+    let careGiversFailed = 0;
+    let careReceiversUpdated = 0;
+    let careReceiversFailed = 0;
+
+    const careGivers = await CareGiver.find({
+      isActive: true,
+      "address.street": { $exists: true, $ne: "" },
+      "address.city": { $exists: true, $ne: "" },
+      "address.postcode": { $exists: true, $ne: "" },
+    });
+
+    for (const doc of careGivers) {
+      const fullAddress = buildFullAddress(doc.address);
+      if (!fullAddress) continue;
+      try {
+        const result = await mapboxService.geocodeAddress(fullAddress);
+        doc.coordinates = {
+          type: "Point",
+          coordinates: [result.longitude, result.latitude],
+        };
+        if (doc.address) doc.address.full = fullAddress;
+        await doc.save();
+        careGiversUpdated++;
+      } catch (err) {
+        console.warn("Regeocode care giver failed", { id: doc._id, error: err.message });
+        careGiversFailed++;
+      }
+    }
+
+    const careReceivers = await CareReceiver.find({
+      isActive: true,
+      "address.street": { $exists: true, $ne: "" },
+      "address.city": { $exists: true, $ne: "" },
+      "address.postcode": { $exists: true, $ne: "" },
+    });
+
+    for (const doc of careReceivers) {
+      const fullAddress = buildFullAddress(doc.address);
+      if (!fullAddress) continue;
+      try {
+        const result = await mapboxService.geocodeAddress(fullAddress);
+        doc.coordinates = {
+          type: "Point",
+          coordinates: [result.longitude, result.latitude],
+        };
+        if (doc.address) doc.address.full = fullAddress;
+        await doc.save();
+        careReceiversUpdated++;
+      } catch (err) {
+        console.warn("Regeocode care receiver failed", { id: doc._id, error: err.message });
+        careReceiversFailed++;
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        careGiversUpdated,
+        careGiversFailed,
+        careReceiversUpdated,
+        careReceiversFailed,
       },
     });
   } catch (error) {

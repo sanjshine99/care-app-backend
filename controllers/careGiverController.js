@@ -112,13 +112,16 @@ const createCareGiver = async (req, res, next) => {
 
     // GEOCODE WITH FALLBACK
     if (address && address.street && address.city && address.postcode) {
-      const fullAddress = `${address.street}, ${address.city} ${address.postcode}`;
+      const fullAddress = `${address.street}, ${address.city} ${address.postcode}, United Kingdom`;
       req.body.address.full = fullAddress;
 
-      if (geocodeAddress && process.env.MAPBOX_ACCESS_TOKEN) {
+      if (geocodeAddress && process.env.MAPBOX_API_KEY) {
         try {
           const coordinates = await geocodeAddress(fullAddress);
-          req.body.coordinates = coordinates;
+          req.body.coordinates = {
+            type: "Point",
+            coordinates: [coordinates.longitude, coordinates.latitude],
+          };
           logger.debug("Geocoded address", { address: fullAddress });
         } catch (geoError) {
           logger.warn("Geocoding failed, using default coordinates", { error: geoError.message });
@@ -249,13 +252,16 @@ const updateCareGiver = async (req, res, next) => {
         address.city !== careGiver.address?.city ||
         address.postcode !== careGiver.address?.postcode)
     ) {
-      const fullAddress = `${address.street}, ${address.city} ${address.postcode}`;
+      const fullAddress = `${address.street}, ${address.city} ${address.postcode}, United Kingdom`;
       req.body.address.full = fullAddress;
 
-      if (geocodeAddress && process.env.MAPBOX_ACCESS_TOKEN) {
+      if (geocodeAddress && process.env.MAPBOX_API_KEY) {
         try {
           const coordinates = await geocodeAddress(fullAddress);
-          req.body.coordinates = coordinates;
+          req.body.coordinates = {
+            type: "Point",
+            coordinates: [coordinates.longitude, coordinates.latitude],
+          };
         } catch (geoError) {
           logger.warn("Geocoding failed on update", { error: geoError.message });
           req.body.coordinates = careGiver.coordinates || {

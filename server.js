@@ -108,17 +108,6 @@ connectDB();
 // ========================================
 // RATE LIMITING
 // ========================================
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10,
-  message: {
-    success: false,
-    error: { message: "Too many attempts, please try again later.", code: "RATE_LIMIT_EXCEEDED" },
-  },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
 const scheduleLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: 3,
@@ -194,7 +183,7 @@ app.get("/", (req, res) => {
 app.use("/api/", generalApiLimiter);
 
 // Specific stricter limits applied inline with route registration
-app.use("/api/auth", authLimiter, authRoutes);
+app.use("/api/auth", authRoutes);
 app.use("/api/caregivers", careGiverRoutes);
 app.use("/api/carereceivers", careReceiverRoutes);
 // Apply strict limiter to schedule generation before the route handler
