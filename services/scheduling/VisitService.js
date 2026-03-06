@@ -1,5 +1,6 @@
 const CareReceiver = require("../../models/CareReceiver");
 const { normalizeTimeToHHMM } = require("../../utils/timeUtils");
+const { toDateString, toUTCDateValue, todayUTC } = require("../../utils/dateUtils");
 
 function isDateInSchedule(checkDate, visit, careReceiverCreatedAt, careReceiverUpdatedAt) {
   const utcDay = checkDate.getUTCDay();
@@ -135,34 +136,19 @@ async function getOccurrencesInRange(careReceiverId, startDate, endDate) {
     return [];
   }
 
-  const now = new Date();
-  const todayUTC = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-  );
-  const createdAtUTC = careReceiver.createdAt
-    ? new Date(
-        Date.UTC(
-          careReceiver.createdAt.getUTCFullYear(),
-          careReceiver.createdAt.getUTCMonth(),
-          careReceiver.createdAt.getUTCDate(),
-        ),
-      )
-    : todayUTC;
-  const updatedAtUTC = careReceiver.updatedAt
-    ? new Date(
-        Date.UTC(
-          careReceiver.updatedAt.getUTCFullYear(),
-          careReceiver.updatedAt.getUTCMonth(),
-          careReceiver.updatedAt.getUTCDate(),
-        ),
-      )
-    : createdAtUTC;
+  const today = todayUTC();
+  const createdAtDate = careReceiver.createdAt
+    ? new Date(toUTCDateValue(careReceiver.createdAt))
+    : today;
+  const updatedAtDate = careReceiver.updatedAt
+    ? new Date(toUTCDateValue(careReceiver.updatedAt))
+    : createdAtDate;
   const effectiveStart = new Date(
     Math.max(
       startDate.getTime(),
-      createdAtUTC.getTime(),
-      updatedAtUTC.getTime(),
-      todayUTC.getTime(),
+      createdAtDate.getTime(),
+      updatedAtDate.getTime(),
+      today.getTime(),
     ),
   );
 
@@ -182,7 +168,7 @@ async function getOccurrencesInRange(careReceiverId, startDate, endDate) {
         const visitObj = visit && typeof visit.toObject === "function" ? visit.toObject() : { ...visit };
         occurrences.push({
           date: new Date(currentDate.getTime()),
-          dateStr: currentDate.toISOString().split("T")[0],
+          dateStr: toDateString(currentDate),
           visit: visitObj,
         });
       }

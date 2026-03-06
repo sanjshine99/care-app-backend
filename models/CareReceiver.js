@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const { normalizeTimeToHHMM } = require("../utils/timeUtils");
+const { getDayOfWeekUTC } = require("../utils/dateUtils");
 
 const careReceiverSchema = new mongoose.Schema(
   {
@@ -338,7 +339,7 @@ careReceiverSchema.methods.shouldVisitOccur = function (
   const visit = this.getVisit(visitNumber);
   if (!visit) return false;
 
-  const dayOfWeek = checkDate.toLocaleDateString("en-GB", { weekday: "long" });
+  const dayOfWeek = getDayOfWeekUTC(checkDate);
 
   // Check if visit occurs on this day of week
   if (!visit.daysOfWeek.includes(dayOfWeek)) {

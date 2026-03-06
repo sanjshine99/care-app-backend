@@ -383,10 +383,10 @@ exports.updateCareReceiver = async (req, res, next) => {
 
     if (changedVisitNumbers.length > 0) {
       const Appointment = require("../models/Appointment");
-      const today = new Date();
-      today.setUTCHours(0, 0, 0, 0);
+      const { todayUTC: getTodayUTC } = require("../utils/dateUtils");
+      const today = getTodayUTC();
 
-      const cancelResult = await Appointment.updateMany(
+      const invalidateResult = await Appointment.updateMany(
         {
           careReceiver: req.params.id,
           visitNumber: { $in: changedVisitNumbers },
@@ -395,16 +395,15 @@ exports.updateCareReceiver = async (req, res, next) => {
         },
         {
           $set: {
-            status: "cancelled",
-            cancellationReason: "Care receiver visit schedule was changed",
-            invalidationReason: null,
-            invalidatedAt: null,
+            status: "needs_reassignment",
+            invalidationReason: "Care receiver visit schedule was changed",
+            invalidatedAt: new Date(),
           },
         }
       );
-      logger.info("Appointments cancelled after visit schedule change", {
+      logger.info("Appointments marked needs_reassignment after visit schedule change", {
         careReceiverId: req.params.id,
-        modifiedCount: cancelResult.modifiedCount,
+        modifiedCount: invalidateResult.modifiedCount,
         visitNumbers: changedVisitNumbers,
       });
     }

@@ -5,6 +5,7 @@ const CareGiver = require("../models/CareGiver");
 const Availability = require("../models/Availability");
 const Appointment = require("../models/Appointment");
 const logger = require("../utils/logger");
+const { parseStartOfDayUTC, parseEndOfDayUTC, toStartOfDayUTC, toEndOfDayUTC, getDefaultDateRange } = require("../utils/dateUtils");
 const {
   revalidateExistingAppointments,
   autoAssignFromUnscheduled,
@@ -97,21 +98,13 @@ const createCareGiver = async (req, res, next) => {
   try {
     const { address } = req.body;
 
-    // Normalize time off dates to UTC midnight
+    // Normalize time off dates to UTC boundaries
     if (req.body.timeOff && Array.isArray(req.body.timeOff)) {
-      req.body.timeOff = req.body.timeOff.map((timeOff) => {
-        const startDate = new Date(timeOff.startDate);
-        startDate.setUTCHours(0, 0, 0, 0);
-
-        const endDate = new Date(timeOff.endDate);
-        endDate.setUTCHours(23, 59, 59, 999);
-
-        return {
-          startDate: startDate,
-          endDate: endDate,
-          reason: timeOff.reason || "",
-        };
-      });
+      req.body.timeOff = req.body.timeOff.map((timeOff) => ({
+        startDate: toStartOfDayUTC(timeOff.startDate),
+        endDate: toEndOfDayUTC(timeOff.endDate),
+        reason: timeOff.reason || "",
+      }));
     }
 
     // GEOCODE WITH FALLBACK
@@ -158,10 +151,7 @@ const createCareGiver = async (req, res, next) => {
       }
     }
 
-    const now = new Date();
-    const rangeStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    const rangeEnd = new Date(rangeStart);
-    rangeEnd.setUTCDate(rangeEnd.getUTCDate() + 8 * 7);
+    const { start: rangeStart, end: rangeEnd } = getDefaultDateRange(8);
     try {
       const jobQueueService = require("../services/jobQueueService");
       await jobQueueService.enqueue(req.user._id, "schedule_bulk", {
@@ -171,6 +161,16 @@ const createCareGiver = async (req, res, next) => {
       });
     } catch (enqueueErr) {
       logger.error("Enqueue schedule_bulk after care giver create failed", { error: enqueueErr.message });
+    }
+
+    // Try to immediately fill existing needs_reassignment gaps with the new caregiver
+    try {
+      const reassignResult = await autoAssignFromUnscheduled(careGiver._id);
+      if (reassignResult.assignedCount > 0) {
+        logger.info(`Auto-assigned ${reassignResult.assignedCount} appointments to new caregiver ${careGiver.name}`);
+      }
+    } catch (assignErr) {
+      logger.error("Auto-assign after caregiver creation failed", { error: assignErr.message });
     }
 
     res.status(201).json({
@@ -225,24 +225,16 @@ const updateCareGiver = async (req, res, next) => {
       });
     }
 
-    // Normalize time off dates to UTC midnight
+    // Normalize time off dates to UTC boundaries
     if (req.body.timeOff && Array.isArray(req.body.timeOff)) {
       console.log("\n⏰ Normalizing time off dates to UTC...");
       console.log("Before:", req.body.timeOff);
 
-      req.body.timeOff = req.body.timeOff.map((timeOff) => {
-        const startDate = new Date(timeOff.startDate);
-        startDate.setUTCHours(0, 0, 0, 0);
-
-        const endDate = new Date(timeOff.endDate);
-        endDate.setUTCHours(23, 59, 59, 999);
-
-        return {
-          startDate: startDate,
-          endDate: endDate,
-          reason: timeOff.reason || "",
-        };
-      });
+      req.body.timeOff = req.body.timeOff.map((timeOff) => ({
+        startDate: toStartOfDayUTC(timeOff.startDate),
+        endDate: toEndOfDayUTC(timeOff.endDate),
+        reason: timeOff.reason || "",
+      }));
 
       logger.debug("Time off dates normalized", { count: req.body.timeOff.length });
     }
@@ -296,6 +288,9 @@ const updateCareGiver = async (req, res, next) => {
     }
     if (req.body.singleHandedOnly !== undefined && req.body.singleHandedOnly !== oldCareGiver.singleHandedOnly) {
       changedFields.push("singleHandedOnly");
+    }
+    if (req.body.gender !== undefined && req.body.gender !== oldCareGiver.gender) {
+      changedFields.push("gender");
     }
     if (
       req.body.coordinates &&
@@ -385,10 +380,7 @@ const updateCareGiver = async (req, res, next) => {
       }
     }
 
-    const now = new Date();
-    const rangeStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    const rangeEnd = new Date(rangeStart);
-    rangeEnd.setUTCDate(rangeEnd.getUTCDate() + 8 * 7);
+    const { start: rangeStart, end: rangeEnd } = getDefaultDateRange(8);
     try {
       const jobQueueService = require("../services/jobQueueService");
       await jobQueueService.enqueue(req.user._id, "schedule_bulk", {

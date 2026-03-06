@@ -5,6 +5,9 @@ const express = require("express");
 const { protect } = require("../middleware/auth");
 const Availability = require("../models/Availability");
 const CareGiver = require("../models/CareGiver");
+const { revalidateExistingAppointments, autoAssignFromUnscheduled } = require("../services/caregiverRevalidationService");
+const { getDayOfWeekUTC } = require("../utils/dateUtils");
+const logger = require("../utils/logger");
 
 const router = express.Router();
 
@@ -109,6 +112,14 @@ router.post("/caregiver/:careGiverId/version", async (req, res, next) => {
       timeOff: timeOff || [],
     });
 
+    // Trigger revalidation of existing appointments after availability change
+    try {
+      await revalidateExistingAppointments(careGiverId, ["availability"]);
+      await autoAssignFromUnscheduled(careGiverId);
+    } catch (revalErr) {
+      logger.error("Revalidation after availability version change failed", { error: revalErr.message });
+    }
+
     res.status(201).json({
       success: true,
       data: { availability },
@@ -148,6 +159,14 @@ router.put("/caregiver/:careGiverId", async (req, res, next) => {
       availability: schedule || [],
       timeOff: timeOff || [],
     });
+
+    // Trigger revalidation of existing appointments after availability change
+    try {
+      await revalidateExistingAppointments(careGiverId, ["availability"]);
+      await autoAssignFromUnscheduled(careGiverId);
+    } catch (revalErr) {
+      logger.error("Revalidation after availability update failed", { error: revalErr.message });
+    }
 
     res.json({
       success: true,
@@ -238,8 +257,7 @@ router.get("/caregiver/:careGiverId/check", async (req, res, next) => {
     }
 
     // Check working hours
-    const day =
-      dayOfWeek || checkDate.toLocaleDateString("en-GB", { weekday: "long" });
+    const day = dayOfWeek || getDayOfWeekUTC(checkDate);
     const isAvailable = availability.isAvailableAt(day, time);
 
     res.json({

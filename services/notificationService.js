@@ -297,12 +297,15 @@ exports.notifyScheduleGenerationFailed = async (
   careReceiverName,
   errorMessage
 ) => {
+  const userMessage = `Auto-scheduling failed for ${careReceiverName}. ` +
+    `Please try again or use manual scheduling to assign care givers.`;
+
   await Notification.create({
     adminUser: userId,
     type: "error",
     priority: "critical",
     title: "Auto-Scheduling Failed",
-    message: `Auto-scheduling failed for ${careReceiverName}: ${errorMessage}`,
+    message: userMessage,
     metadata: {
       action: "schedule_generation_failed",
       resourceType: "carereceiver",
@@ -310,7 +313,7 @@ exports.notifyScheduleGenerationFailed = async (
       details: {
         careReceiverId: careReceiverId?.toString?.() || careReceiverId,
         careReceiverName,
-        errorMessage,
+        errorMessage, // raw error preserved for debugging
       },
     },
     actionRequired: true,
@@ -347,16 +350,19 @@ exports.notifyCareGiverAdded = async (userId, careGiverName, skillsCount) => {
  * Create notification for scheduling conflicts
  */
 exports.notifySchedulingConflict = async (userId, conflictDetails) => {
+  const userMessage = conflictDetails.userMessage ||
+    `A scheduling conflict was detected. Please review the affected appointments.`;
+
   await Notification.create({
     adminUser: userId,
     type: "warning",
     priority: "high",
     title: "Scheduling Conflict Detected",
-    message: `Conflict detected: ${conflictDetails.message}`,
+    message: userMessage,
     metadata: {
       action: "scheduling_conflict",
       resourceType: "appointment",
-      details: conflictDetails,
+      details: conflictDetails, // raw details preserved for debugging
     },
     actionRequired: true,
     actionUrl: "/schedule",

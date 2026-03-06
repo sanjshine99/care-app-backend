@@ -1,6 +1,7 @@
 // Updated Appointment Model - WITH VALIDATION FIELDS
 
 const mongoose = require("mongoose");
+const { getDayOfWeekUTC } = require("../utils/dateUtils");
 
 const appointmentSchema = new mongoose.Schema(
   {
@@ -176,8 +177,19 @@ const appointmentSchema = new mongoose.Schema(
 appointmentSchema.index({ date: 1, careGiver: 1 });
 appointmentSchema.index({ date: 1, status: 1 });
 appointmentSchema.index({ careReceiver: 1, date: 1 });
-appointmentSchema.index({ status: 1, date: 1 }); // ← ADDED for validation queries
+appointmentSchema.index({ status: 1, date: 1 }); // For validation queries
 appointmentSchema.index({ careGiver: 1, status: 1, date: 1 }); // For caregiver revalidation queries
+
+// Unique compound index: prevents duplicate active appointments for the same slot
+appointmentSchema.index(
+  { careReceiver: 1, date: 1, visitNumber: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      status: { $in: ["scheduled", "in_progress", "completed"] },
+    },
+  }
+);
 
 // Pre-save: Capture availability snapshot
 appointmentSchema.pre("save", async function (next) {
@@ -196,9 +208,7 @@ appointmentSchema.pre("save", async function (next) {
         this.careGiverAvailability = availability._id;
 
         // Store snapshot for historical context
-        const dayOfWeek = this.date.toLocaleDateString("en-GB", {
-          weekday: "long",
-        });
+        const dayOfWeek = getDayOfWeekUTC(this.date);
         const daySchedule = availability.schedule.find(
           (s) => s.dayOfWeek === dayOfWeek
         );
@@ -243,7 +253,7 @@ appointmentSchema.methods.isWithinCurrentAvailability = async function () {
 
   if (!currentAvailability) return false;
 
-  const dayOfWeek = this.date.toLocaleDateString("en-GB", { weekday: "long" });
+  const dayOfWeek = getDayOfWeekUTC(this.date);
   return currentAvailability.isAvailableAt(dayOfWeek, this.startTime);
 };
 

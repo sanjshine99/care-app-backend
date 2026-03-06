@@ -1,4 +1,6 @@
 const Appointment = require("../../models/Appointment");
+const { toStartOfDayUTC, toEndOfDayUTC } = require("../../utils/dateUtils");
+const { ACTIVE_APPOINTMENT_STATUSES } = require("../../utils/constants");
 
 async function findByCareReceiverAndDateRange(careReceiverId, startDate, endDate, options = {}) {
   const query = {
@@ -14,22 +16,38 @@ async function findByCareReceiverAndDateRange(careReceiverId, startDate, endDate
 }
 
 async function findExistingSlot(careReceiverId, date, visitNumber) {
-  const startOfDay = new Date(date);
-  startOfDay.setUTCHours(0, 0, 0, 0);
-  const endOfDay = new Date(date);
-  endOfDay.setUTCHours(23, 59, 59, 999);
+  const startOfDay = toStartOfDayUTC(date);
+  const endOfDay = toEndOfDayUTC(date);
 
   return Appointment.findOne({
     careReceiver: careReceiverId,
     date: { $gte: startOfDay, $lte: endOfDay },
     visitNumber,
-    status: { $in: ["scheduled", "in_progress", "completed"] },
+    status: { $in: ACTIVE_APPOINTMENT_STATUSES },
   });
 }
 
 async function create(data) {
   const appointment = await Appointment.create(data);
   return appointment;
+}
+
+async function createSafe(data) {
+  try {
+    return await Appointment.create(data);
+  } catch (err) {
+    if (err.code === 11000) {
+      // Duplicate — already scheduled by a concurrent process
+      const existing = await Appointment.findOne({
+        careReceiver: data.careReceiver,
+        date: data.date,
+        visitNumber: data.visitNumber,
+        status: { $in: ACTIVE_APPOINTMENT_STATUSES },
+      });
+      return existing;
+    }
+    throw err;
+  }
 }
 
 async function markNeedsReassignment(appointmentId, reason) {
@@ -45,10 +63,8 @@ async function markNeedsReassignment(appointmentId, reason) {
 }
 
 async function findCareGiverAppointmentsOnDate(careGiverId, date, excludeAppointmentId = null) {
-  const startOfDay = new Date(date);
-  startOfDay.setUTCHours(0, 0, 0, 0);
-  const endOfDay = new Date(date);
-  endOfDay.setUTCHours(23, 59, 59, 999);
+  const startOfDay = toStartOfDayUTC(date);
+  const endOfDay = toEndOfDayUTC(date);
 
   const query = {
     $or: [{ careGiver: careGiverId }, { secondaryCareGiver: careGiverId }],
@@ -68,6 +84,7 @@ module.exports = {
   findByCareReceiverAndDateRange,
   findExistingSlot,
   create,
+  createSafe,
   markNeedsReassignment,
   findCareGiverAppointmentsOnDate,
 };

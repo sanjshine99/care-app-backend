@@ -143,7 +143,6 @@ const careGiverSchema = new mongoose.Schema(
 );
 
 // Indexes
-careGiverSchema.index({ email: 1 });
 careGiverSchema.index({ coordinates: '2dsphere' }); // Geospatial index for location queries
 careGiverSchema.index({ skills: 1 });
 careGiverSchema.index({ isActive: 1 });

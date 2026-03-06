@@ -7,6 +7,7 @@ const CareReceiver = require("../models/CareReceiver");
 const Appointment = require("../models/Appointment");
 const settingsService = require("./settingsService");
 const { normalizeTimeToHHMM } = require("../utils/timeUtils");
+const { toDateString, toStartOfDayUTC, toEndOfDayUTC, getDayOfWeekUTC, toUTCDateValue, todayUTC } = require("../utils/dateUtils");
 const TravelCalculator = require("./scheduling/TravelCalculator");
 const VisitService = require("./scheduling/VisitService");
 const CaregiverService = require("./scheduling/CaregiverService");
@@ -521,48 +522,33 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
   console.log(`\n========================================`);
   console.log(`SCHEDULING: ${careReceiver.name}`);
   console.log(
-    `Period: ${startDate.toISOString().split("T")[0]} to ${endDate.toISOString().split("T")[0]}`,
+    `Period: ${toDateString(startDate)} to ${toDateString(endDate)}`,
   );
   console.log(`========================================\n`);
 
   const scheduled = [];
   const failed = [];
 
-  const now = new Date();
-  const todayUTC = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-  );
-  const createdAtUTC = careReceiver.createdAt
-    ? new Date(
-        Date.UTC(
-          careReceiver.createdAt.getUTCFullYear(),
-          careReceiver.createdAt.getUTCMonth(),
-          careReceiver.createdAt.getUTCDate(),
-        ),
-      )
-    : todayUTC;
-  const updatedAtUTC = careReceiver.updatedAt
-    ? new Date(
-        Date.UTC(
-          careReceiver.updatedAt.getUTCFullYear(),
-          careReceiver.updatedAt.getUTCMonth(),
-          careReceiver.updatedAt.getUTCDate(),
-        ),
-      )
-    : createdAtUTC;
+  const today = todayUTC();
+  const createdAtDate = careReceiver.createdAt
+    ? new Date(toUTCDateValue(careReceiver.createdAt))
+    : today;
+  const updatedAtDate = careReceiver.updatedAt
+    ? new Date(toUTCDateValue(careReceiver.updatedAt))
+    : createdAtDate;
   const effectiveStart = new Date(
     Math.max(
       startDate.getTime(),
-      createdAtUTC.getTime(),
-      updatedAtUTC.getTime(),
-      todayUTC.getTime(),
+      createdAtDate.getTime(),
+      updatedAtDate.getTime(),
+      today.getTime(),
     ),
   );
 
   const currentDate = new Date(effectiveStart.getTime());
 
   while (currentDate <= endDate) {
-    const dateStr = currentDate.toISOString().split("T")[0];
+    const dateStr = toDateString(currentDate);
     const dayName = formatDateForLog(currentDate);
 
     console.log(`\n--- Processing Date: ${dateStr} (${dayName}) ---`);
@@ -719,7 +705,7 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
           appointmentData.secondaryCareGiver = secondaryCareGiver._id;
         }
 
-        const appointment = await AppointmentService.create(appointmentData);
+        const appointment = await AppointmentService.createSafe(appointmentData);
 
         scheduled.push(appointment);
 

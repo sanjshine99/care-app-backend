@@ -17,6 +17,8 @@ const {
 const notificationService = require("../services/notificationService");
 const settingsService = require("../services/settingsService");
 const { normalizeTimeToHHMM } = require("../utils/timeUtils");
+const { parseStartOfDayUTC, parseEndOfDayUTC, toDateString, getDayOfWeekUTC, toStartOfDayUTC, toEndOfDayUTC, toUTCDateValue, todayUTC } = require("../utils/dateUtils");
+const { ACTIVE_APPOINTMENT_STATUSES, CALENDAR_VISIBLE_STATUSES } = require("../utils/constants");
 const logger = require("../utils/logger");
 
 // =============================================================================
@@ -41,9 +43,8 @@ exports.generateSchedule = async (req, res, next) => {
       });
     }
 
-    const start = new Date(startDate);
-    start.setUTCHours(0, 0, 0, 0);
-    const end = new Date(endDate + "T23:59:59.999Z");
+    const start = parseStartOfDayUTC(startDate);
+    const end = parseEndOfDayUTC(endDate);
 
     if (start > end) {
       return res.status(400).json({
@@ -195,6 +196,9 @@ exports.getAllAppointments = async (req, res, next) => {
 
     if (status) {
       query.status = status;
+    } else {
+      // Default: show calendar-visible statuses only (hide needs_reassignment/needs_review)
+      query.status = { $in: CALENDAR_VISIBLE_STATUSES };
     }
 
     console.log("📥 Fetching appointments from database...");
@@ -259,10 +263,7 @@ exports.getUnscheduled = async (req, res, next) => {
     const end = new Date(endDate);
     const skipReasons = summaryOnly === "true" || summaryOnly === true;
 
-    const now = new Date();
-    const todayUTC = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-    );
+    const todayDate = todayUTC();
 
     const jobQueueService = require("../services/jobQueueService");
     const activeJobs = await jobQueueService.getActiveByUserId(req.user._id);
@@ -322,19 +323,13 @@ exports.getUnscheduled = async (req, res, next) => {
         appointmentsByCr.get(cr._id.toString()) || [];
 
       const createdAtUTC = cr.createdAt
-        ? new Date(
-            Date.UTC(
-              new Date(cr.createdAt).getUTCFullYear(),
-              new Date(cr.createdAt).getUTCMonth(),
-              new Date(cr.createdAt).getUTCDate(),
-            ),
-          )
-        : todayUTC;
+        ? new Date(toUTCDateValue(cr.createdAt))
+        : todayDate;
       const effectiveStart = new Date(
         Math.max(
           start.getTime(),
           createdAtUTC.getTime(),
-          todayUTC.getTime(),
+          todayDate.getTime(),
         ),
       );
 
@@ -347,7 +342,7 @@ exports.getUnscheduled = async (req, res, next) => {
 
       const appointmentMap = new Map();
       existingAppointments.forEach((apt) => {
-        const dateKey = apt.date.toISOString().split("T")[0];
+        const dateKey = toDateString(apt.date);
         const visitKey = `${dateKey}-${apt.visitNumber}`;
         appointmentMap.set(visitKey, apt);
       });
@@ -356,7 +351,7 @@ exports.getUnscheduled = async (req, res, next) => {
       const details = [];
 
       for (const date of dates) {
-        const dateStr = date.toISOString().split("T")[0];
+        const dateStr = toDateString(date);
 
         for (const visit of cr.dailyVisits) {
           const shouldHaveAppointment = isDateInSchedule(
@@ -642,13 +637,14 @@ exports.getScheduleStats = async (req, res, next) => {
       };
     }
 
-    const [totalAppointments, scheduled, completed, cancelled, missed] =
+    const [totalAppointments, scheduled, completed, cancelled, missed, needsReassignment] =
       await Promise.all([
         Appointment.countDocuments(query),
         Appointment.countDocuments({ ...query, status: "scheduled" }),
         Appointment.countDocuments({ ...query, status: "completed" }),
         Appointment.countDocuments({ ...query, status: "cancelled" }),
         Appointment.countDocuments({ ...query, status: "missed" }),
+        Appointment.countDocuments({ ...query, status: "needs_reassignment" }),
       ]);
 
     const completionRate =
@@ -665,6 +661,7 @@ exports.getScheduleStats = async (req, res, next) => {
           completed,
           cancelled,
           missed,
+          needsReassignment,
           completionRate: `${completionRate}%`,
         },
       },
@@ -944,21 +941,15 @@ async function checkCareGiverAvailabilityForManual(
   // FIX: Check time off from CareGiver FIRST
   // ========================================
   const isOnTimeOff = (careGiver.timeOff || []).some((to) => {
-    const startDate = new Date(to.startDate);
-    startDate.setHours(0, 0, 0, 0);
-
-    const endDate = new Date(to.endDate);
-    endDate.setHours(23, 59, 59, 999);
-
-    const checkDate = new Date(date);
-    checkDate.setHours(0, 0, 0, 0);
-
-    return checkDate >= startDate && checkDate <= endDate;
+    const toStart = toStartOfDayUTC(to.startDate);
+    const toEnd = toEndOfDayUTC(to.endDate);
+    const checkDate = toStartOfDayUTC(date);
+    return checkDate >= toStart && checkDate <= toEnd;
   });
 
   if (isOnTimeOff) {
     console.log(
-      `   ${careGiver.name} is on time off on ${date.toISOString().split("T")[0]}`,
+      `   ${careGiver.name} is on time off on ${toDateString(date)}`,
     );
     return { available: false, reason: "On time off" };
   }
@@ -989,7 +980,7 @@ async function checkCareGiverAvailabilityForManual(
   }
 
   // Check working hours
-  const dayOfWeek = date.toLocaleDateString("en-GB", { weekday: "long" });
+  const dayOfWeek = getDayOfWeekUTC(date);
   const daySchedule = availability.schedule.find(
     (s) => s.dayOfWeek === dayOfWeek,
   );
@@ -1011,10 +1002,8 @@ async function checkCareGiverAvailabilityForManual(
   }
 
   // FRESH: Check conflicts with current appointments
-  const startOfDay = new Date(date);
-  startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(date);
-  endOfDay.setHours(23, 59, 59, 999);
+  const startOfDay = toStartOfDayUTC(date);
+  const endOfDay = toEndOfDayUTC(date);
 
   const conflicts = await Appointment.find({
     $or: [{ careGiver: careGiverId }, { secondaryCareGiver: careGiverId }],
@@ -1136,11 +1125,29 @@ exports.createManualAppointment = async (req, res, next) => {
       });
     }
 
+    // Check for duplicate appointment in same slot
+    const appointmentDate = parseStartOfDayUTC(date);
+    const existing = await Appointment.findOne({
+      careReceiver: careReceiverId,
+      date: appointmentDate,
+      visitNumber: visitNumber || 1,
+      status: { $in: ACTIVE_APPOINTMENT_STATUSES },
+    });
+    if (existing) {
+      return res.status(409).json({
+        success: false,
+        error: {
+          message: "An appointment already exists for this care receiver on this date and visit number.",
+          code: "DUPLICATE_APPOINTMENT",
+        },
+      });
+    }
+
     const appointment = await Appointment.create({
       careReceiver: careReceiverId,
       careGiver: careGiverId,
       secondaryCareGiver: secondaryCareGiverId || undefined,
-      date: new Date(date),
+      date: appointmentDate,
       startTime: normalizedStartTime,
       endTime: normalizedEndTime,
       duration: duration || 60,
@@ -1319,10 +1326,61 @@ exports.validateSchedule = async (req, res, next) => {
       });
     }
 
-    const start = new Date(startDate);
-    start.setUTCHours(0, 0, 0, 0);
+    const start = parseStartOfDayUTC(startDate);
+    const end = parseEndOfDayUTC(endDate);
 
-    const end = new Date(endDate + "T23:59:59.999Z");
+    // Clean up pre-existing duplicate active appointments in the range
+    const duplicates = await Appointment.aggregate([
+      {
+        $match: {
+          date: { $gte: start, $lte: end },
+          status: { $in: ACTIVE_APPOINTMENT_STATUSES },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            careReceiver: "$careReceiver",
+            date: "$date",
+            visitNumber: "$visitNumber",
+          },
+          count: { $sum: 1 },
+          ids: { $push: "$_id" },
+          createdAts: { $push: "$createdAt" },
+        },
+      },
+      { $match: { count: { $gt: 1 } } },
+    ]);
+
+    if (duplicates.length > 0) {
+      const cancelOps = [];
+      for (const dup of duplicates) {
+        const sorted = dup.ids
+          .map((id, i) => ({ id, createdAt: dup.createdAts[i] }))
+          .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+        // Keep newest, cancel the rest
+        for (const d of sorted.slice(1)) {
+          cancelOps.push({
+            updateOne: {
+              filter: { _id: d.id },
+              update: {
+                $set: {
+                  status: "cancelled",
+                  cancellationReason:
+                    "Duplicate appointment cleaned up during validation",
+                },
+              },
+            },
+          });
+        }
+      }
+      if (cancelOps.length > 0) {
+        await Appointment.bulkWrite(cancelOps, { ordered: false });
+        console.log(
+          `[Validate] Cleaned up ${cancelOps.length} duplicate appointments`,
+        );
+      }
+    }
 
     // Get all scheduled appointments in range
     const appointments = await Appointment.find({
@@ -1366,40 +1424,17 @@ exports.validateSchedule = async (req, res, next) => {
 
       // Check 3: TIME OFF - UTC comparison
       if (apt.careGiver && apt.careGiver.isActive && apt.careGiver.timeOff) {
-        // Normalize appointment date to UTC
-        const appointmentDate = new Date(apt.date);
-        const utcAppointmentDate = Date.UTC(
-          appointmentDate.getUTCFullYear(),
-          appointmentDate.getUTCMonth(),
-          appointmentDate.getUTCDate(),
-        );
+        const utcAppointmentDate = toUTCDateValue(apt.date);
 
         for (const timeOff of apt.careGiver.timeOff) {
-          // Normalize time off dates to UTC
-          const timeOffStartDate = new Date(timeOff.startDate);
-          const utcStart = Date.UTC(
-            timeOffStartDate.getUTCFullYear(),
-            timeOffStartDate.getUTCMonth(),
-            timeOffStartDate.getUTCDate(),
-          );
+          const utcStart = toUTCDateValue(timeOff.startDate);
+          const utcEnd = toUTCDateValue(timeOff.endDate) + (24 * 60 * 60 * 1000 - 1); // end of day
 
-          const timeOffEndDate = new Date(timeOff.endDate);
-          const utcEnd = Date.UTC(
-            timeOffEndDate.getUTCFullYear(),
-            timeOffEndDate.getUTCMonth(),
-            timeOffEndDate.getUTCDate(),
-            23,
-            59,
-            59,
-            999,
-          );
-
-          // Check if appointment date falls within time off period (UTC comparison)
           if (utcAppointmentDate >= utcStart && utcAppointmentDate <= utcEnd) {
             const reason = timeOff.reason || "Personal";
             issues.push(`Care giver is now on time off (${reason})`);
             console.log(
-              `   Appointment on ${new Date(utcAppointmentDate).toISOString().split("T")[0]} - Care giver on time off`,
+              `   Appointment on ${toDateString(apt.date)} - Care giver on time off`,
             );
             break;
           }
@@ -1414,39 +1449,13 @@ exports.validateSchedule = async (req, res, next) => {
 
         // Check secondary care giver time off (UTC comparison)
         if (apt.secondaryCareGiver.timeOff) {
-          // Normalize appointment date to UTC
-          const appointmentDate = new Date(apt.date);
-          const utcAppointmentDate = Date.UTC(
-            appointmentDate.getUTCFullYear(),
-            appointmentDate.getUTCMonth(),
-            appointmentDate.getUTCDate(),
-          );
+          const utcAppointmentDate = toUTCDateValue(apt.date);
 
           for (const timeOff of apt.secondaryCareGiver.timeOff) {
-            // Normalize time off dates to UTC
-            const timeOffStartDate = new Date(timeOff.startDate);
-            const utcStart = Date.UTC(
-              timeOffStartDate.getUTCFullYear(),
-              timeOffStartDate.getUTCMonth(),
-              timeOffStartDate.getUTCDate(),
-            );
+            const utcStart = toUTCDateValue(timeOff.startDate);
+            const utcEnd = toUTCDateValue(timeOff.endDate) + (24 * 60 * 60 * 1000 - 1);
 
-            const timeOffEndDate = new Date(timeOff.endDate);
-            const utcEnd = Date.UTC(
-              timeOffEndDate.getUTCFullYear(),
-              timeOffEndDate.getUTCMonth(),
-              timeOffEndDate.getUTCDate(),
-              23,
-              59,
-              59,
-              999,
-            );
-
-            // UTC comparison
-            if (
-              utcAppointmentDate >= utcStart &&
-              utcAppointmentDate <= utcEnd
-            ) {
+            if (utcAppointmentDate >= utcStart && utcAppointmentDate <= utcEnd) {
               const reason = timeOff.reason || "Personal";
               issues.push(
                 `Secondary care giver is now on time off (${reason})`,
@@ -1477,7 +1486,17 @@ exports.validateSchedule = async (req, res, next) => {
         apt.status = "needs_reassignment";
         apt.invalidationReason = issues.join("; ");
         apt.invalidatedAt = new Date();
-        await apt.save();
+        try {
+          await apt.save();
+        } catch (saveErr) {
+          if (saveErr.code === 11000) {
+            console.warn(
+              `[Validate] Duplicate key on save for ${apt._id}, skipping`,
+            );
+            continue;
+          }
+          throw saveErr;
+        }
 
         invalidAppointments.push({
           _id: apt._id,
@@ -1491,7 +1510,7 @@ exports.validateSchedule = async (req, res, next) => {
 
         updatedCount++;
         console.log(
-          `   CONFLICT: ${apt.careReceiver?.name} on ${apt.date.toISOString().split("T")[0]} - ${issues.join("; ")}`,
+          `   CONFLICT: ${apt.careReceiver?.name} on ${toDateString(apt.date)} - ${issues.join("; ")}`,
         );
       } else {
         // Still valid - ensure status is scheduled
@@ -1499,11 +1518,28 @@ exports.validateSchedule = async (req, res, next) => {
           apt.status = "scheduled";
           apt.invalidationReason = null;
           apt.invalidatedAt = null;
-          await apt.save();
-          updatedCount++;
-          console.log(
-            `   RESOLVED: ${apt.careReceiver?.name} on ${apt.date.toISOString().split("T")[0]} - back to scheduled`,
-          );
+          try {
+            await apt.save();
+            updatedCount++;
+            console.log(
+              `   RESOLVED: ${apt.careReceiver?.name} on ${toDateString(apt.date)} - back to scheduled`,
+            );
+          } catch (saveErr) {
+            if (saveErr.code === 11000) {
+              // Another active appointment already exists for this slot — cancel this duplicate
+              apt.status = "cancelled";
+              apt.cancellationReason =
+                "Duplicate appointment detected during validation";
+              apt.invalidationReason = null;
+              apt.invalidatedAt = null;
+              await apt.save();
+              console.warn(
+                `[Validate] Cancelled duplicate appointment ${apt._id} for ${apt.careReceiver?.name} on ${toDateString(apt.date)}`,
+              );
+            } else {
+              throw saveErr;
+            }
+          }
         }
 
         validAppointments.push({
@@ -1597,7 +1633,7 @@ exports.validateSchedule = async (req, res, next) => {
             startTime: apt.startTime,
           });
 
-          console.log(`[Auto-Assign] Assigned ${apt.careReceiver.name} on ${apt.date.toISOString().split("T")[0]} to ${result.careGiver.name}`);
+          console.log(`[Auto-Assign] Assigned ${apt.careReceiver.name} on ${toDateString(apt.date)} to ${result.careGiver.name}`);
         }
       } catch (assignError) {
         console.error(`[Auto-Assign] Error for appointment ${apt._id}:`, assignError.message);
@@ -1605,7 +1641,20 @@ exports.validateSchedule = async (req, res, next) => {
     }
 
     if (bulkOps.length > 0) {
-      await Appointment.bulkWrite(bulkOps);
+      try {
+        await Appointment.bulkWrite(bulkOps, { ordered: false });
+      } catch (bulkErr) {
+        if (
+          bulkErr.code === 11000 ||
+          bulkErr.writeErrors?.some((e) => e.code === 11000)
+        ) {
+          console.warn(
+            `[Auto-Assign] Some assignments skipped due to duplicate slots`,
+          );
+        } else {
+          throw bulkErr;
+        }
+      }
     }
 
     const remainingInvalid = invalidAppointments.length - autoAssignedAppointments.length;

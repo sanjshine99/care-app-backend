@@ -4,18 +4,10 @@ const notificationService = require("../services/notificationService");
 const socketService = require("../services/socketService");
 const CareReceiver = require("../models/CareReceiver");
 const logger = require("../utils/logger");
+const { getDefaultDateRange, parseStartOfDayUTC, parseEndOfDayUTC, toDateString } = require("../utils/dateUtils");
 
 const POLL_INTERVAL_MS = 3000;
 const DEFAULT_SCHEDULE_WEEKS = 8;
-
-function getDefaultDateRange() {
-  const now = new Date();
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const end = new Date(start);
-  end.setUTCDate(end.getUTCDate() + DEFAULT_SCHEDULE_WEEKS * 7);
-  end.setUTCHours(23, 59, 59, 999);
-  return { start, end };
-}
 
 async function resolveCareReceiverIds(payload) {
   const { careReceiverIds, careReceiverId } = payload || {};
@@ -49,7 +41,9 @@ async function processScheduleCareReceiver(job) {
     return;
   }
 
-  const { start, end } = getDefaultDateRange();
+  const { start, end } = payload?.startDate
+    ? { start: parseStartOfDayUTC(payload.startDate), end: parseEndOfDayUTC(payload.endDate || payload.startDate) }
+    : getDefaultDateRange(DEFAULT_SCHEDULE_WEEKS);
 
   try {
     const result = await scheduleForCareReceiver(careReceiverId, start, end);
@@ -74,8 +68,8 @@ async function processScheduleCareReceiver(job) {
       jobId,
       type: "schedule_care_receiver",
       resultSummary: { scheduled: scheduledCount, failed: failedCount },
-      startDate: start.toISOString?.() ? start.toISOString().split("T")[0] : undefined,
-      endDate: end.toISOString?.() ? end.toISOString().split("T")[0] : undefined,
+      startDate: toDateString(start),
+      endDate: toDateString(end),
     });
 
     logger.info("Schedule job completed (schedule_care_receiver)", {
@@ -103,8 +97,9 @@ async function processScheduleCareReceiver(job) {
 
 async function processScheduleBulk(job) {
   const { _id: jobId, userId, payload } = job;
-  const startDate = payload?.startDate ? new Date(payload.startDate) : getDefaultDateRange().start;
-  const endDate = payload?.endDate ? new Date(payload.endDate) : getDefaultDateRange().end;
+  const defaultRange = getDefaultDateRange(DEFAULT_SCHEDULE_WEEKS);
+  const startDate = payload?.startDate ? new Date(payload.startDate) : defaultRange.start;
+  const endDate = payload?.endDate ? new Date(payload.endDate) : defaultRange.end;
 
   let careReceiverIds;
   try {
@@ -132,8 +127,8 @@ async function processScheduleBulk(job) {
   }
 
   const totalSteps = careReceiverIds.length;
-  const startDateStr = startDate.toISOString?.() ? startDate.toISOString().split("T")[0] : undefined;
-  const endDateStr = endDate.toISOString?.() ? endDate.toISOString().split("T")[0] : undefined;
+  const startDateStr = toDateString(startDate);
+  const endDateStr = toDateString(endDate);
 
   try {
     const results = [];

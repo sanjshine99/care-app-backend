@@ -1,16 +1,17 @@
 const CareGiver = require("../models/CareGiver");
+const CareReceiver = require("../models/CareReceiver");
 const Appointment = require("../models/Appointment");
 const settingsService = require("./settingsService");
 const { isCareGiverAvailable, calculateDistance } = require("./schedulingService");
 const logger = require("../utils/logger");
+const { todayUTC } = require("../utils/dateUtils");
 
 /**
  * Revalidate all future scheduled appointments for a caregiver
  * after their profile changed. Marks invalid ones as needs_reassignment.
  */
 async function revalidateExistingAppointments(careGiverId, changedFields) {
-  const now = new Date();
-  now.setUTCHours(0, 0, 0, 0);
+  const now = todayUTC();
 
   const appointments = await Appointment.find({
     $or: [{ careGiver: careGiverId }, { secondaryCareGiver: careGiverId }],
@@ -30,7 +31,7 @@ async function revalidateExistingAppointments(careGiverId, changedFields) {
   const reasons = [];
 
   for (const apt of appointments) {
-    const reason = checkAppointmentValidity(apt, careGiver, changedFields, maxDistanceKm);
+    const reason = await checkAppointmentValidity(apt, careGiver, changedFields, maxDistanceKm);
     if (reason) {
       invalidated.push({ _id: apt._id, reason });
       reasons.push(reason);
@@ -67,7 +68,7 @@ async function revalidateExistingAppointments(careGiverId, changedFields) {
  * Check if a single appointment is still valid for the updated caregiver.
  * Returns a reason string if invalid, or null if still valid.
  */
-function checkAppointmentValidity(appointment, careGiver, changedFields, maxDistanceKm) {
+async function checkAppointmentValidity(appointment, careGiver, changedFields, maxDistanceKm) {
   const careReceiver = appointment.careReceiver;
   if (!careReceiver) return "Care receiver not found";
 
@@ -103,6 +104,36 @@ function checkAppointmentValidity(appointment, careGiver, changedFields, maxDist
     }
   }
 
+  // Gender check
+  if (changedFields.includes("gender")) {
+    if (
+      careReceiver.genderPreference &&
+      careReceiver.genderPreference !== "No Preference" &&
+      careReceiver.genderPreference !== "no_preference" &&
+      careGiver.gender !== careReceiver.genderPreference
+    ) {
+      return "Care giver gender no longer matches care receiver preference";
+    }
+  }
+
+  // Availability schedule check
+  if (changedFields.includes("availability")) {
+    try {
+      const availCheck = await isCareGiverAvailable(
+        careGiver._id,
+        appointment.date,
+        appointment.startTime,
+        appointment.endTime,
+        careReceiver.coordinates?.coordinates
+      );
+      if (!availCheck.available) {
+        return `Care giver no longer available: ${availCheck.reason || "schedule changed"}`;
+      }
+    } catch (err) {
+      logger.warn("Availability check failed during revalidation", { error: err.message });
+    }
+  }
+
   return null;
 }
 
@@ -111,8 +142,7 @@ function checkAppointmentValidity(appointment, careGiver, changedFields, maxDist
  * to the updated caregiver.
  */
 async function autoAssignFromUnscheduled(careGiverId) {
-  const now = new Date();
-  now.setUTCHours(0, 0, 0, 0);
+  const now = todayUTC();
 
   const careGiver = await CareGiver.findById(careGiverId);
   if (!careGiver || !careGiver.isActive) {
@@ -148,11 +178,12 @@ async function autoAssignFromUnscheduled(careGiverId) {
     const required = apt.requirements || [];
     if (!required.every((r) => careGiver.skills.includes(r))) continue;
 
-    // Gender preference
+    // Gender preference — compare caregiver's gender against care receiver's preference
     if (
       careReceiver.genderPreference &&
       careReceiver.genderPreference !== "No Preference" &&
-      careReceiver.gender !== careGiver.gender
+      careReceiver.genderPreference !== "no_preference" &&
+      careGiver.gender !== careReceiver.genderPreference
     ) continue;
 
     // Double-handed check
