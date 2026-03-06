@@ -7,6 +7,10 @@ const {
   notifyRecurringVisitsAdded,
 } = require("../services/notificationService");
 const logger = require("../utils/logger");
+const {
+  revalidateAppointmentsForCareReceiver,
+  autoReassignInvalidatedAppointments,
+} = require("../services/careReceiverRevalidationService");
 
 const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -249,8 +253,9 @@ exports.updateCareReceiver = async (req, res, next) => {
     }
 
     // If address changed, re-geocode
+    let addressChanged = false;
     if (req.body.address) {
-      const addressChanged =
+      addressChanged =
         req.body.address.street !== careReceiver.address.street ||
         req.body.address.city !== careReceiver.address.city ||
         req.body.address.postcode !== careReceiver.address.postcode;
@@ -336,6 +341,34 @@ exports.updateCareReceiver = async (req, res, next) => {
       }
     }
 
+    // Detect fields that require appointment revalidation
+    const changedFields = [];
+    if (addressChanged) changedFields.push("address");
+    if (
+      req.body.genderPreference !== undefined &&
+      req.body.genderPreference !== careReceiver.genderPreference
+    ) {
+      changedFields.push("genderPreference");
+    }
+    for (const newV of newVisits) {
+      const id = newV._id && String(newV._id);
+      if (!id || !oldById.has(id)) continue;
+      const oldV = oldById.get(id);
+      if (
+        !changedFields.includes("requirements") &&
+        JSON.stringify([...(newV.requirements || [])].sort()) !==
+          JSON.stringify([...(oldV.requirements || [])].sort())
+      ) {
+        changedFields.push("requirements");
+      }
+      if (
+        !changedFields.includes("doubleHanded") &&
+        newV.doubleHanded !== oldV.doubleHanded
+      ) {
+        changedFields.push("doubleHanded");
+      }
+    }
+
     // Update
     careReceiver = await CareReceiver.findByIdAndUpdate(
       req.params.id,
@@ -376,6 +409,44 @@ exports.updateCareReceiver = async (req, res, next) => {
       });
     }
 
+    // Revalidate existing appointments if compatibility-affecting fields changed
+    let revalidationResult = null;
+    let autoReassignResult = null;
+
+    if (changedFields.length > 0) {
+      try {
+        revalidationResult = await revalidateAppointmentsForCareReceiver(
+          req.params.id,
+          changedFields,
+          careReceiver
+        );
+        logger.info("Care receiver revalidation complete", {
+          careReceiverId: req.params.id,
+          changedFields,
+          invalidated: revalidationResult.invalidatedCount,
+        });
+
+        if (revalidationResult.invalidatedCount > 0) {
+          autoReassignResult = await autoReassignInvalidatedAppointments(req.params.id);
+          logger.info("Auto-reassign after care receiver update complete", {
+            careReceiverId: req.params.id,
+            reassigned: autoReassignResult.reassignedCount,
+            failed: autoReassignResult.failedCount,
+          });
+        }
+      } catch (revalError) {
+        logger.error("Care receiver revalidation error", { error: revalError.message });
+      }
+    }
+
+    const revalidation = revalidationResult
+      ? {
+          invalidatedCount: revalidationResult.invalidatedCount,
+          reassignedCount: autoReassignResult?.reassignedCount || 0,
+          reasons: revalidationResult.reasons,
+        }
+      : null;
+
     const hasRecurringVisits =
       req.body.dailyVisits && req.body.dailyVisits.length > 0;
     if (hasRecurringVisits) {
@@ -385,6 +456,7 @@ exports.updateCareReceiver = async (req, res, next) => {
         data: { careReceiver },
         message: "Care receiver updated successfully",
         scheduleGenerationQueued: true,
+        revalidation,
       });
       const jobQueueService = require("../services/jobQueueService");
       jobQueueService
@@ -398,6 +470,7 @@ exports.updateCareReceiver = async (req, res, next) => {
         success: true,
         data: { careReceiver },
         message: "Care receiver updated successfully",
+        revalidation,
       });
     }
   } catch (error) {

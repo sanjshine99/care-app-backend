@@ -291,9 +291,13 @@ exports.getUnscheduled = async (req, res, next) => {
       .lean();
     const careReceiverIds = careReceivers.map((cr) => cr._id);
 
+    // Only count active appointments — cancelled/needs_reassignment/missed
+    // should NOT prevent a visit from appearing as unscheduled
+    const activeStatuses = ["scheduled", "in_progress", "completed"];
     const allAppointments = await Appointment.find({
       careReceiver: { $in: careReceiverIds },
       date: { $gte: start, $lte: end },
+      status: { $in: activeStatuses },
     })
       .select("_id careReceiver date visitNumber status")
       .lean();
@@ -326,20 +330,10 @@ exports.getUnscheduled = async (req, res, next) => {
             ),
           )
         : todayUTC;
-      const updatedAtUTC = cr.updatedAt
-        ? new Date(
-            Date.UTC(
-              new Date(cr.updatedAt).getUTCFullYear(),
-              new Date(cr.updatedAt).getUTCMonth(),
-              new Date(cr.updatedAt).getUTCDate(),
-            ),
-          )
-        : createdAtUTC;
       const effectiveStart = new Date(
         Math.max(
           start.getTime(),
           createdAtUTC.getTime(),
-          updatedAtUTC.getTime(),
           todayUTC.getTime(),
         ),
       );
