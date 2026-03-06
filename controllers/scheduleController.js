@@ -9,6 +9,7 @@ const {
   scheduleForCareReceiver,
   bulkSchedule,
   findBestCareGiver,
+  findSecondaryCareGiver,
   isDateInSchedule,
   isCareGiverAvailable,
   calculateDistance,
@@ -469,8 +470,19 @@ exports.analyzeUnscheduled = async (req, res, next) => {
 
     // Calculate end time
     const [hours, minutes] = visit.preferredTime.split(":").map(Number);
-    const endMinutes = minutes + visit.duration;
-    const endTime = `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
+    const totalMinutes = hours * 60 + minutes + visit.duration;
+    if (totalMinutes > 24 * 60) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          message: "Visit extends past midnight. Adjust preferred time or duration.",
+          code: "OVERNIGHT_VISIT",
+        },
+      });
+    }
+    const endHour = Math.floor(totalMinutes / 60);
+    const endMin = totalMinutes % 60;
+    const endTime = `${String(endHour).padStart(2, "0")}:${String(endMin).padStart(2, "0")}`;
 
     // Get all active care givers
     const allCareGivers = await CareGiver.find({ isActive: true }).lean();
@@ -518,7 +530,7 @@ exports.analyzeUnscheduled = async (req, res, next) => {
       // Check gender preference (generation never considers opposite gender)
       if (
         careReceiver.genderPreference &&
-        careReceiver.genderPreference !== "no_preference" &&
+        careReceiver.genderPreference !== "No Preference" &&
         cg.gender.toLowerCase() !== careReceiver.genderPreference.toLowerCase()
       ) {
         analysis.canAssign = false;
@@ -1115,6 +1127,21 @@ exports.createManualAppointment = async (req, res, next) => {
     const normalizedStartTime = normalizeTimeToHHMM(startTime);
     const normalizedEndTime = normalizeTimeToHHMM(endTime);
 
+    // Validate startTime < endTime
+    const [startH, startM] = normalizedStartTime.split(":").map(Number);
+    const [endH, endM] = normalizedEndTime.split(":").map(Number);
+    const startMinutes = startH * 60 + startM;
+    const endMinutes = endH * 60 + endM;
+    if (endMinutes <= startMinutes) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          message: "End time must be after start time",
+          code: "INVALID_TIME_RANGE",
+        },
+      });
+    }
+
     const appointment = await Appointment.create({
       careReceiver: careReceiverId,
       careGiver: careGiverId,
@@ -1500,6 +1527,96 @@ exports.validateSchedule = async (req, res, next) => {
     console.log(`   Invalid: ${invalidAppointments.length}`);
     console.log(`   Updated: ${updatedCount}\n`);
 
+    // ========================================
+    // AUTO-ASSIGNMENT PHASE
+    // Attempt to reassign needs_reassignment appointments
+    // ========================================
+    const autoAssignedAppointments = [];
+    const MAX_AUTO_ASSIGN = 100;
+
+    const needsReassignment = await Appointment.find({
+      date: { $gte: start, $lte: end },
+      status: "needs_reassignment",
+    })
+      .populate("careReceiver", "name dailyVisits genderPreference coordinates preferredCareGiver")
+      .limit(MAX_AUTO_ASSIGN)
+      .sort({ date: 1 });
+
+    console.log(`[Auto-Assign] Found ${needsReassignment.length} needs_reassignment appointments to attempt`);
+
+    const bulkOps = [];
+
+    for (const apt of needsReassignment) {
+      if (!apt.careReceiver || !apt.careReceiver.coordinates?.coordinates) continue;
+
+      const visit = {
+        visitNumber: apt.visitNumber || 1,
+        preferredTime: apt.startTime,
+        duration: apt.duration,
+        requirements: apt.requirements || [],
+        doubleHanded: apt.doubleHanded || false,
+        priority: apt.priority || 3,
+      };
+
+      try {
+        const result = await findBestCareGiver(apt.careReceiver, visit, apt.date);
+
+        if (result.careGiver) {
+          let secondaryCareGiver = null;
+
+          if (apt.doubleHanded) {
+            const secondaryResult = await findSecondaryCareGiver(
+              apt.careReceiver,
+              visit,
+              apt.date,
+              result.careGiver._id
+            );
+            if (!secondaryResult.careGiver) {
+              console.log(`[Auto-Assign] Skipping ${apt.careReceiver.name} - no secondary caregiver for double-handed`);
+              continue;
+            }
+            secondaryCareGiver = secondaryResult.careGiver._id;
+          }
+
+          const updateFields = {
+            status: "scheduled",
+            careGiver: result.careGiver._id,
+            invalidationReason: null,
+            invalidatedAt: null,
+          };
+          if (secondaryCareGiver) {
+            updateFields.secondaryCareGiver = secondaryCareGiver;
+          }
+
+          bulkOps.push({
+            updateOne: {
+              filter: { _id: apt._id },
+              update: { $set: updateFields },
+            },
+          });
+
+          autoAssignedAppointments.push({
+            _id: apt._id,
+            careReceiver: apt.careReceiver.name,
+            careGiver: result.careGiver.name,
+            date: apt.date,
+            startTime: apt.startTime,
+          });
+
+          console.log(`[Auto-Assign] Assigned ${apt.careReceiver.name} on ${apt.date.toISOString().split("T")[0]} to ${result.careGiver.name}`);
+        }
+      } catch (assignError) {
+        console.error(`[Auto-Assign] Error for appointment ${apt._id}:`, assignError.message);
+      }
+    }
+
+    if (bulkOps.length > 0) {
+      await Appointment.bulkWrite(bulkOps);
+    }
+
+    const remainingInvalid = invalidAppointments.length - autoAssignedAppointments.length;
+    console.log(`[Auto-Assign] Auto-assigned: ${autoAssignedAppointments.length}, Remaining invalid: ${Math.max(0, remainingInvalid)}\n`);
+
     res.json({
       success: true,
       data: {
@@ -1508,14 +1625,20 @@ exports.validateSchedule = async (req, res, next) => {
           valid: validAppointments.length,
           invalid: invalidAppointments.length,
           updated: updatedCount,
+          autoAssigned: autoAssignedAppointments.length,
         },
         invalidAppointments: invalidAppointments,
         validAppointments: validAppointments,
+        autoAssignedAppointments: autoAssignedAppointments,
       },
       message:
         invalidAppointments.length > 0
-          ? `Found ${invalidAppointments.length} appointments that need reassignment`
-          : `All appointments are valid`,
+          ? autoAssignedAppointments.length > 0
+            ? `Found ${invalidAppointments.length} conflicts, auto-assigned ${autoAssignedAppointments.length}`
+            : `Found ${invalidAppointments.length} appointments that need reassignment`
+          : autoAssignedAppointments.length > 0
+            ? `All valid. Auto-assigned ${autoAssignedAppointments.length} previously unassigned appointment(s)`
+            : `All appointments are valid`,
     });
   } catch (error) {
     console.error(" Error in validateSchedule:", error);

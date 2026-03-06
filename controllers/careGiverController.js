@@ -5,6 +5,10 @@ const CareGiver = require("../models/CareGiver");
 const Availability = require("../models/Availability");
 const Appointment = require("../models/Appointment");
 const logger = require("../utils/logger");
+const {
+  revalidateExistingAppointments,
+  autoAssignFromUnscheduled,
+} = require("../services/caregiverRevalidationService");
 
 // Try to import geocode service, but don't fail if it doesn't exist
 let geocodeAddress;
@@ -210,8 +214,8 @@ const createCareGiver = async (req, res, next) => {
 // @access  Private
 const updateCareGiver = async (req, res, next) => {
   try {
-    let careGiver = await CareGiver.findById(req.params.id);
-    if (!careGiver) {
+    const oldCareGiver = await CareGiver.findById(req.params.id);
+    if (!oldCareGiver) {
       return res.status(404).json({
         success: false,
         error: {
@@ -248,9 +252,9 @@ const updateCareGiver = async (req, res, next) => {
     // Re-geocode if address changed
     if (
       address &&
-      (address.street !== careGiver.address?.street ||
-        address.city !== careGiver.address?.city ||
-        address.postcode !== careGiver.address?.postcode)
+      (address.street !== oldCareGiver.address?.street ||
+        address.city !== oldCareGiver.address?.city ||
+        address.postcode !== oldCareGiver.address?.postcode)
     ) {
       const fullAddress = `${address.street}, ${address.city} ${address.postcode}, United Kingdom`;
       req.body.address.full = fullAddress;
@@ -264,23 +268,41 @@ const updateCareGiver = async (req, res, next) => {
           };
         } catch (geoError) {
           logger.warn("Geocoding failed on update", { error: geoError.message });
-          req.body.coordinates = careGiver.coordinates || {
+          req.body.coordinates = oldCareGiver.coordinates || {
             type: "Point",
             coordinates: [-0.1276, 51.5074],
           };
         }
       } else {
-        req.body.coordinates = careGiver.coordinates || {
+        req.body.coordinates = oldCareGiver.coordinates || {
           type: "Point",
           coordinates: [-0.1276, 51.5074],
         };
       }
     }
 
-    careGiver = await CareGiver.findByIdAndUpdate(req.params.id, req.body, {
+    let careGiver = await CareGiver.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
       runValidators: true,
     });
+
+    // Detect which scheduling-relevant fields changed
+    const changedFields = [];
+    if (req.body.skills && JSON.stringify([...req.body.skills].sort()) !== JSON.stringify([...(oldCareGiver.skills || [])].sort())) {
+      changedFields.push("skills");
+    }
+    if (req.body.availability && JSON.stringify(req.body.availability) !== JSON.stringify(oldCareGiver.availability || [])) {
+      changedFields.push("availability");
+    }
+    if (req.body.singleHandedOnly !== undefined && req.body.singleHandedOnly !== oldCareGiver.singleHandedOnly) {
+      changedFields.push("singleHandedOnly");
+    }
+    if (
+      req.body.coordinates &&
+      JSON.stringify(req.body.coordinates) !== JSON.stringify(oldCareGiver.coordinates)
+    ) {
+      changedFields.push("address");
+    }
 
     // AUTO-SYNC AVAILABILITY
     if (req.body.availability) {
@@ -340,6 +362,29 @@ const updateCareGiver = async (req, res, next) => {
       }
     }
 
+    // Revalidate existing appointments and auto-assign from unscheduled
+    let revalidationResult = null;
+    let autoAssignResult = null;
+
+    if (changedFields.length > 0) {
+      try {
+        revalidationResult = await revalidateExistingAppointments(careGiver._id, changedFields);
+        logger.info("Caregiver revalidation complete", {
+          careGiverId: careGiver._id,
+          changedFields,
+          invalidated: revalidationResult.invalidatedCount,
+        });
+
+        autoAssignResult = await autoAssignFromUnscheduled(careGiver._id);
+        logger.info("Auto-assign from unscheduled complete", {
+          careGiverId: careGiver._id,
+          assigned: autoAssignResult.assignedCount,
+        });
+      } catch (revalError) {
+        logger.error("Revalidation/auto-assign error", { error: revalError.message });
+      }
+    }
+
     const now = new Date();
     const rangeStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     const rangeEnd = new Date(rangeStart);
@@ -359,6 +404,15 @@ const updateCareGiver = async (req, res, next) => {
       success: true,
       data: { careGiver },
       message: "Care giver updated successfully",
+      revalidation: revalidationResult
+        ? {
+            invalidatedCount: revalidationResult.invalidatedCount,
+            reasons: revalidationResult.reasons,
+          }
+        : null,
+      autoAssign: autoAssignResult
+        ? { assignedCount: autoAssignResult.assignedCount }
+        : null,
     });
   } catch (error) {
     if (error.name === "ValidationError") {

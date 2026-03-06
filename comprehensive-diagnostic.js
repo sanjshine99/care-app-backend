@@ -11,6 +11,7 @@ const CareReceiver = require("./models/CareReceiver");
 const Appointment = require("./models/Appointment");
 const Availability = require("./models/Availability");
 const CareGiver = require("./models/CareGiver");
+const { normalizeTimeToHHMM } = require("./utils/timeUtils");
 
 const MONGODB_URI =
   process.env.MONGODB_URI || "mongodb://localhost:27017/caregivingdb";
@@ -124,7 +125,7 @@ async function comprehensiveDiagnostic() {
             `  Start date: ${visit.recurrenceStartDate || "Not set (uses createdAt)"}`,
           );
         }
-        console.log(`  Requirements: ${visit.requirements.join(", ")}`);
+        console.log(`  Requirements: ${(visit.requirements || []).join(", ")}`);
         console.log(`  Double-handed: ${visit.doubleHanded}`);
       });
 
@@ -250,7 +251,7 @@ async function comprehensiveDiagnostic() {
           console.log(
             `Visit: ${firstMissing.visitNumber} at ${firstMissing.time} (${visit.duration} min)`,
           );
-          console.log(`Requirements: ${visit.requirements.join(", ")}`);
+          console.log(`Requirements: ${(visit.requirements || []).join(", ")}`);
 
           // Get care givers with required skills
           const careGivers = await CareGiver.find({
@@ -313,7 +314,7 @@ async function comprehensiveDiagnostic() {
                 .split(":")
                 .map(Number);
               const endMinutes = minutes + visit.duration;
-              const endTime = `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
+              const endTime = normalizeTimeToHHMM(`${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`);
 
               const fitsInSlot = daySchedule.slots.some(
                 (slot) =>

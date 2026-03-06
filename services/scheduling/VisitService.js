@@ -104,7 +104,8 @@ function isDateInSchedule(checkDate, visit, careReceiverCreatedAt, careReceiverU
       const monthsDiff =
         (checkDate.getUTCFullYear() - startDate.getUTCFullYear()) * 12 +
         (checkDate.getUTCMonth() - startDate.getUTCMonth());
-      return monthsDiff >= 0 && monthsDiff % (recurrenceInterval || 1) === 0;
+      const dayOfMonthMatch = checkDate.getUTCDate() === startDate.getUTCDate();
+      return dayOfMonthMatch && monthsDiff >= 0 && monthsDiff % (recurrenceInterval || 1) === 0;
     }
     if (recurrencePattern === "custom") {
       return daysDiff % (recurrenceInterval || 1) === 0;

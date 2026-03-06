@@ -177,6 +177,7 @@ appointmentSchema.index({ date: 1, careGiver: 1 });
 appointmentSchema.index({ date: 1, status: 1 });
 appointmentSchema.index({ careReceiver: 1, date: 1 });
 appointmentSchema.index({ status: 1, date: 1 }); // ← ADDED for validation queries
+appointmentSchema.index({ careGiver: 1, status: 1, date: 1 }); // For caregiver revalidation queries
 
 // Pre-save: Capture availability snapshot
 appointmentSchema.pre("save", async function (next) {

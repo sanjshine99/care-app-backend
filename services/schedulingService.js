@@ -306,10 +306,11 @@ async function findBestCareGiver(
   date,
   excludeCareGiverId = null,
 ) {
+  const requirements = visit.requirements || [];
   console.log(
     `\n[Find Best] Looking for care giver for Visit ${visit.visitNumber}`,
   );
-  console.log(`[Find Best] Requirements: ${visit.requirements.join(", ")}`);
+  console.log(`[Find Best] Requirements: ${requirements.join(", ") || "(none)"}`);
 
   if (excludeCareGiverId) {
     console.log(`[Find Best] Excluding care giver: ${excludeCareGiverId}`);
@@ -321,8 +322,10 @@ async function findBestCareGiver(
 
   const query = {
     isActive: true,
-    skills: { $all: visit.requirements },
   };
+  if (requirements.length > 0) {
+    query.skills = { $all: requirements };
+  }
 
   if (excludeCareGiverId) {
     query._id = { $ne: excludeCareGiverId };
@@ -371,8 +374,10 @@ async function findBestCareGiver(
     // Determine if the problem is missing skills/gender/active or purely distance
     const skillsOnlyQuery = {
       isActive: true,
-      skills: { $all: visit.requirements },
     };
+    if (requirements.length > 0) {
+      skillsOnlyQuery.skills = { $all: requirements };
+    }
     if (excludeCareGiverId) skillsOnlyQuery._id = { $ne: excludeCareGiverId };
     if (careReceiver.genderPreference !== "No Preference") {
       skillsOnlyQuery.gender = careReceiver.genderPreference;
@@ -395,7 +400,7 @@ async function findBestCareGiver(
 
   const [hours, minutes] = visit.preferredTime.split(":").map(Number);
   const endMinutes = minutes + visit.duration;
-  const endTime = `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
+  const endTime = normalizeTimeToHHMM(`${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`);
 
   const scoredCareGivers = [];
   const unavailabilityReasons = [];
@@ -698,7 +703,7 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
           endTime,
           duration: visit.duration,
           visitNumber: visit.visitNumber,
-          requirements: visit.requirements,
+          requirements: visit.requirements || [],
           doubleHanded: visit.doubleHanded || false,
           priority: visit.priority || 3,
           notes: visit.notes || "",

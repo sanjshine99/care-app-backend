@@ -151,10 +151,10 @@ exports.analyzeUnscheduledAppointment = async (req, res) => {
             console.log(`   Not available on ${dayOfWeek}s`);
           } else {
             // Check if preferred time falls within any slot
-            const preferredTime = visit.preferredTime;
+            const preferredTime = normalizeTimeToHHMM(visit.preferredTime);
             const [hours, minutes] = preferredTime.split(":").map(Number);
             const endMinutes = minutes + visit.duration;
-            const endTime = `${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`;
+            const endTime = normalizeTimeToHHMM(`${hours + Math.floor(endMinutes / 60)}:${(endMinutes % 60).toString().padStart(2, "0")}`);
 
             const isWithinSlot = dayAvailability.slots.some((slot) => {
               return preferredTime >= slot.startTime && endTime <= slot.endTime;
