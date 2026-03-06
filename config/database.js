@@ -10,6 +10,10 @@ const connectDB = async () => {
     console.log(` MongoDB Connected: ${conn.connection.host}`);
     console.log(`📦 Database: ${conn.connection.name}`);
 
+    // Ensure all Mongoose schema indexes are created in the DB
+    await mongoose.connection.syncIndexes();
+    console.log("MongoDB indexes synced");
+
     // Handle connection events
     mongoose.connection.on("error", (err) => {
       console.error("MongoDB connection error:", err);
