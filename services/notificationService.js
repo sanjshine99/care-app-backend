@@ -2,31 +2,48 @@
 // Service to create notifications from system events
 
 const Notification = require("../models/Notification");
+const moment = require("moment");
+
+/**
+ * Format a date range for display in notifications.
+ * Returns e.g. "Mar 11 – Apr 10, 2026" or "(Mar 11 – Apr 10, 2026)" with parens.
+ */
+function formatDateRange(startDate, endDate, { parens = false } = {}) {
+  if (!startDate || !endDate) return "";
+  const s = moment.utc(startDate);
+  const e = moment.utc(endDate);
+  const range = s.year() === e.year()
+    ? `${s.format("MMM D")} – ${e.format("MMM D, YYYY")}`
+    : `${s.format("MMM D, YYYY")} – ${e.format("MMM D, YYYY")}`;
+  return parens ? ` (${range})` : range;
+}
 
 /**
  * Create notification for schedule generation
  */
 exports.notifyScheduleGenerated = async (userId, scheduleResults) => {
-  const { totalScheduled, totalFailed, careReceiversProcessed } =
+  const { totalScheduled, totalFailed, careReceiversProcessed, startDate, endDate } =
     scheduleResults;
+
+  const dateRangeStr = formatDateRange(startDate, endDate, { parens: true });
 
   let type = "success";
   let priority = "medium";
   let title = "Schedule Generated Successfully";
-  let message = `Generated ${totalScheduled} appointments for ${careReceiversProcessed} care receivers.`;
+  let message = `Generated ${totalScheduled} appointments for ${careReceiversProcessed} care receivers${dateRangeStr}.`;
 
   if (totalFailed > 0) {
     type = "warning";
     priority = "high";
     title = "Schedule Generated with Warnings";
-    message = `Generated ${totalScheduled} appointments, but ${totalFailed} appointments failed to schedule.`;
+    message = `Generated ${totalScheduled} appointments, but ${totalFailed} failed to schedule${dateRangeStr}.`;
   }
 
   if (totalScheduled === 0 && totalFailed > 0) {
     type = "error";
     priority = "critical";
     title = "Schedule Generation Failed";
-    message = `Failed to schedule ${totalFailed} appointments. Please review and schedule manually.`;
+    message = `Failed to schedule ${totalFailed} appointments${dateRangeStr}. Please review and schedule manually.`;
   }
 
   await Notification.create({
@@ -43,6 +60,8 @@ exports.notifyScheduleGenerated = async (userId, scheduleResults) => {
         scheduled: totalScheduled,
         failed: totalFailed,
         careReceivers: careReceiversProcessed,
+        startDate,
+        endDate,
       },
     },
     actionRequired: totalFailed > 0,
@@ -243,18 +262,23 @@ exports.notifyScheduleGeneratedForCareReceiver = async (
   careReceiverId,
   careReceiverName,
   scheduledCount,
-  failedCount
+  failedCount,
+  dateRange = null
 ) => {
+  const dateRangeStr = dateRange
+    ? formatDateRange(dateRange.startDate, dateRange.endDate, { parens: true })
+    : "";
+
   let type = "success";
   let priority = "medium";
   let title = "Schedule Generated";
-  let message = `Schedule generated for ${careReceiverName}: ${scheduledCount} appointments assigned.`;
+  let message = `Schedule generated for ${careReceiverName}: ${scheduledCount} appointments assigned${dateRangeStr}.`;
 
   if (failedCount > 0) {
     type = "warning";
     priority = "high";
     title = "Schedule Generated with Gaps";
-    message = `Schedule generated for ${careReceiverName}: ${scheduledCount} appointments assigned, ${failedCount} could not be assigned.`;
+    message = `Schedule generated for ${careReceiverName}: ${scheduledCount} assigned, ${failedCount} could not be assigned${dateRangeStr}.`;
   }
 
   const isTotalFailure = scheduledCount === 0 && failedCount > 0;
@@ -262,7 +286,7 @@ exports.notifyScheduleGeneratedForCareReceiver = async (
     type = "error";
     priority = "critical";
     title = "Schedule Generation Failed";
-    message = `Failed to assign appointments for ${careReceiverName}. ${failedCount} need attention.`;
+    message = `Failed to assign appointments for ${careReceiverName}${dateRangeStr}. ${failedCount} need attention.`;
   }
 
   await Notification.create({
@@ -280,6 +304,7 @@ exports.notifyScheduleGeneratedForCareReceiver = async (
         careReceiverId: careReceiverId?.toString?.() || careReceiverId,
         scheduled: scheduledCount,
         failed: failedCount,
+        ...(dateRange && { startDate: dateRange.startDate, endDate: dateRange.endDate }),
       },
     },
     actionRequired: failedCount > 0,
@@ -390,6 +415,34 @@ exports.notifySystem = async (
     actionRequired: !!actionUrl,
     actionUrl,
     actionLabel,
+  });
+};
+
+/**
+ * Create notification when schedule is expiring soon (appointments ending within 7 days)
+ */
+exports.notifyScheduleExpiring = async (userId, lastScheduledDate, daysRemaining) => {
+  const lastDateStr = moment.utc(lastScheduledDate).format("MMM D, YYYY");
+  const nextMonthName = moment.utc(lastScheduledDate).add(1, "day").format("MMMM YYYY");
+
+  await Notification.create({
+    adminUser: userId,
+    type: "warning",
+    priority: "high",
+    title: "Schedule Ending Soon",
+    message: `Your current schedule ends on ${lastDateStr} (${daysRemaining} day${daysRemaining !== 1 ? "s" : ""} remaining). Generate appointments for ${nextMonthName} to ensure continuity.`,
+    metadata: {
+      action: "schedule_expiry_warning",
+      resourceType: "schedule",
+      details: {
+        lastScheduledDate: lastDateStr,
+        daysRemaining,
+        nextMonthName,
+      },
+    },
+    actionRequired: true,
+    actionUrl: "/schedule/generate",
+    actionLabel: "Schedule Next Month",
   });
 };
 

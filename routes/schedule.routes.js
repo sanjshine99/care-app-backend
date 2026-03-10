@@ -78,9 +78,12 @@ router.get(
 );
 
 // ========================================
-// STATISTICS
+// STATISTICS & STATUS
 // ========================================
 // Get schedule stats
 router.get("/stats", scheduleController.getScheduleStats);
+
+// Get schedule status (expiry info, next month coverage)
+router.get("/schedule-status", scheduleController.getScheduleStatus);
 
 module.exports = router;

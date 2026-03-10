@@ -10,24 +10,64 @@ const connectDB = async () => {
     console.log(` MongoDB Connected: ${conn.connection.host}`);
     console.log(`📦 Database: ${conn.connection.name}`);
 
-    // Ensure all schema-defined indexes (including 2dsphere) exist in the database
-    await conn.connection.syncIndexes();
-    console.log("Database indexes synced");
-
-    // Verify critical 2dsphere index exists — scheduling depends on $near queries
+    // Sync indexes for all registered models
     try {
-      const CareGiver = require("../models/CareGiver");
-      const indexes = await CareGiver.collection.getIndexes();
-      const has2dsphere = Object.values(indexes).some((idx) =>
-        Object.values(idx).includes("2dsphere")
-      );
-      if (!has2dsphere) {
-        console.error(
-          "CRITICAL: Missing 2dsphere index on caregivers collection — scheduling geo-queries will fail"
-        );
-      }
+      await conn.connection.syncIndexes();
+      console.log("Database indexes synced");
+    } catch (syncErr) {
+      console.error("syncIndexes error:", syncErr.message);
+    }
+
+    // Explicitly ensure CareGiver indexes (2dsphere) — surface any data issues
+    const CareGiver = require("../models/CareGiver");
+    try {
+      await CareGiver.ensureIndexes();
+      console.log("CareGiver indexes verified (including 2dsphere)");
     } catch (indexErr) {
-      console.error("Could not verify 2dsphere index:", indexErr.message);
+      console.error(
+        "CRITICAL: Failed to create CareGiver indexes —",
+        indexErr.message
+      );
+      console.error(
+        "This likely means some caregivers have invalid coordinates. " +
+          "Fix the data, then restart."
+      );
+
+      // Identify caregivers with invalid coordinates
+      try {
+        const badDocs = await CareGiver.find({
+          $or: [
+            { "coordinates.coordinates": { $exists: false } },
+            { "coordinates.coordinates": { $size: 0 } },
+            { "coordinates.coordinates.0": { $lt: -180 } },
+            { "coordinates.coordinates.0": { $gt: 180 } },
+            { "coordinates.coordinates.1": { $lt: -90 } },
+            { "coordinates.coordinates.1": { $gt: 90 } },
+          ],
+        }).select("name coordinates");
+        if (badDocs.length > 0) {
+          console.error("Caregivers with invalid coordinates:");
+          badDocs.forEach((d) =>
+            console.error(
+              `  - ${d.name} (${d._id}): ${JSON.stringify(d.coordinates)}`
+            )
+          );
+        }
+      } catch (diagErr) {
+        console.error("Could not run diagnostics:", diagErr.message);
+      }
+    }
+
+    // Explicitly ensure Appointment indexes (compound unique)
+    const Appointment = require("../models/Appointment");
+    try {
+      await Appointment.ensureIndexes();
+      console.log("Appointment indexes verified (including unique compound)");
+    } catch (indexErr) {
+      console.error(
+        "WARNING: Failed to create Appointment indexes —",
+        indexErr.message
+      );
     }
 
     // Handle connection events

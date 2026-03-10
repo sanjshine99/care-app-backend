@@ -7,7 +7,7 @@ const logger = require("../utils/logger");
 const { getDefaultDateRange, parseStartOfDayUTC, parseEndOfDayUTC, toDateString } = require("../utils/dateUtils");
 
 const POLL_INTERVAL_MS = 3000;
-const DEFAULT_SCHEDULE_WEEKS = 8;
+const DEFAULT_SCHEDULE_WEEKS = 4;
 
 async function resolveCareReceiverIds(payload) {
   const { careReceiverIds, careReceiverId } = payload || {};
@@ -61,7 +61,8 @@ async function processScheduleCareReceiver(job) {
       careReceiverId,
       careReceiverName,
       scheduledCount,
-      failedCount
+      failedCount,
+      { startDate: toDateString(start), endDate: toDateString(end) }
     );
 
     socketService.emitToUser(userId.toString(), "schedule_job_completed", {
@@ -190,6 +191,8 @@ async function processScheduleBulk(job) {
       totalScheduled,
       totalFailed,
       careReceiversProcessed: results.length,
+      startDate: startDateStr,
+      endDate: endDateStr,
     });
 
     socketService.emitToUser(userId.toString(), "schedule_job_completed", {

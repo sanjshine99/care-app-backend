@@ -151,7 +151,7 @@ const createCareGiver = async (req, res, next) => {
       }
     }
 
-    const { start: rangeStart, end: rangeEnd } = getDefaultDateRange(8);
+    const { start: rangeStart, end: rangeEnd } = getDefaultDateRange(4);
     try {
       const jobQueueService = require("../services/jobQueueService");
       await jobQueueService.enqueue(req.user._id, "schedule_bulk", {
@@ -380,7 +380,7 @@ const updateCareGiver = async (req, res, next) => {
       }
     }
 
-    const { start: rangeStart, end: rangeEnd } = getDefaultDateRange(8);
+    const { start: rangeStart, end: rangeEnd } = getDefaultDateRange(4);
     try {
       const jobQueueService = require("../services/jobQueueService");
       await jobQueueService.enqueue(req.user._id, "schedule_bulk", {

@@ -46,6 +46,18 @@ exports.generateSchedule = async (req, res, next) => {
     const start = parseStartOfDayUTC(startDate);
     const end = parseEndOfDayUTC(endDate);
 
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    if (start < today) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          message: "Start date must be today or in the future",
+          code: "PAST_START_DATE",
+        },
+      });
+    }
+
     if (start > end) {
       return res.status(400).json({
         success: false,
@@ -667,6 +679,87 @@ exports.getScheduleStats = async (req, res, next) => {
       },
     });
   } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get schedule status (expiry info, next month coverage, suggested range)
+// @route   GET /api/schedule/schedule-status
+// @access  Private
+exports.getScheduleStatus = async (req, res, next) => {
+  try {
+    const today = todayUTC();
+    const moment = require("moment");
+
+    // Find the furthest future scheduled appointment
+    const lastAppointment = await Appointment.findOne({
+      status: "scheduled",
+      date: { $gte: today },
+    })
+      .sort({ date: -1 })
+      .select("date")
+      .lean();
+
+    if (!lastAppointment) {
+      return res.json({
+        success: true,
+        data: {
+          lastScheduledDate: null,
+          daysRemaining: 0,
+          totalScheduledAppointments: 0,
+          nextMonth: null,
+          suggestedRange: {
+            startDate: toDateString(today),
+            endDate: toDateString(new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000)),
+          },
+        },
+      });
+    }
+
+    const daysRemaining = Math.ceil(
+      (lastAppointment.date.getTime() - today.getTime()) / (24 * 60 * 60 * 1000),
+    );
+
+    const totalScheduledAppointments = await Appointment.countDocuments({
+      status: "scheduled",
+      date: { $gte: today },
+    });
+
+    // Next month info
+    const nextMonthStart = moment.utc(lastAppointment.date).add(1, "day").startOf("month").toDate();
+    const nextMonthEnd = moment.utc(nextMonthStart).endOf("month").toDate();
+    const nextMonthName = moment.utc(nextMonthStart).format("MMMM YYYY");
+
+    const nextMonthAppointmentCount = await Appointment.countDocuments({
+      date: { $gte: nextMonthStart, $lte: nextMonthEnd },
+      status: { $in: ["scheduled", "in_progress", "completed"] },
+    });
+
+    // Suggested range: day after last scheduled → +30 days
+    const suggestedStart = new Date(lastAppointment.date.getTime() + 24 * 60 * 60 * 1000);
+    const suggestedEnd = new Date(suggestedStart.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    res.json({
+      success: true,
+      data: {
+        lastScheduledDate: toDateString(lastAppointment.date),
+        daysRemaining,
+        totalScheduledAppointments,
+        nextMonth: {
+          name: nextMonthName,
+          startDate: toDateString(nextMonthStart),
+          endDate: toDateString(nextMonthEnd),
+          appointmentCount: nextMonthAppointmentCount,
+          hasSchedule: nextMonthAppointmentCount > 0,
+        },
+        suggestedRange: {
+          startDate: toDateString(suggestedStart),
+          endDate: toDateString(suggestedEnd),
+        },
+      },
+    });
+  } catch (error) {
+    logger.error("Get schedule status failed", { error: error.message });
     next(error);
   }
 };
@@ -1700,6 +1793,7 @@ module.exports = {
   getAllAppointments: exports.getAllAppointments,
   getUnscheduled: exports.getUnscheduled,
   getScheduleStats: exports.getScheduleStats,
+  getScheduleStatus: exports.getScheduleStatus,
   getFreshCareReceiverData: exports.getFreshCareReceiverData,
   findAvailableForManual: exports.findAvailableForManual,
   createManualAppointment: exports.createManualAppointment,

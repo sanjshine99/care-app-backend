@@ -64,7 +64,7 @@ exports.toUTCDateValue = (date) => {
 /**
  * Get default scheduling date range (today to N weeks ahead)
  */
-exports.getDefaultDateRange = (weeks = 8) => {
+exports.getDefaultDateRange = (weeks = 4) => {
   const now = new Date();
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
   const end = new Date(start);
