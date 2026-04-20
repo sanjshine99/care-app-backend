@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { UK_POSTCODE_FORMAT_REGEX } = require('../utils/ukPostcode');
 
 const careGiverSchema = new mongoose.Schema(
   {
@@ -31,10 +32,7 @@ const careGiverSchema = new mongoose.Schema(
         type: String,
         required: true,
         uppercase: true,
-        match: [
-          /^[A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2}$/i,
-          'Please provide a valid UK postcode',
-        ],
+        match: [UK_POSTCODE_FORMAT_REGEX, 'Please provide a valid UK postcode'],
       },
       full: String, // Auto-generated full address
     },

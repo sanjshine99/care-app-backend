@@ -5,6 +5,7 @@ const CareGiver = require("../models/CareGiver");
 const Availability = require("../models/Availability");
 const Appointment = require("../models/Appointment");
 const logger = require("../utils/logger");
+const { normalizeUkPostcode } = require("../utils/ukPostcode");
 const { parseStartOfDayUTC, parseEndOfDayUTC, toStartOfDayUTC, toEndOfDayUTC, getDefaultDateRange } = require("../utils/dateUtils");
 const {
   revalidateExistingAppointments,
@@ -105,6 +106,10 @@ const createCareGiver = async (req, res, next) => {
         endDate: toEndOfDayUTC(timeOff.endDate),
         reason: timeOff.reason || "",
       }));
+    }
+
+    if (req.body.address?.postcode != null) {
+      req.body.address.postcode = normalizeUkPostcode(req.body.address.postcode);
     }
 
     // GEOCODE WITH FALLBACK
@@ -240,6 +245,10 @@ const updateCareGiver = async (req, res, next) => {
     }
 
     const { address } = req.body;
+
+    if (req.body.address?.postcode != null) {
+      req.body.address.postcode = normalizeUkPostcode(req.body.address.postcode);
+    }
 
     // Re-geocode if address changed
     if (

@@ -7,6 +7,7 @@ const {
   notifyRecurringVisitsAdded,
 } = require("../services/notificationService");
 const logger = require("../utils/logger");
+const { normalizeUkPostcode } = require("../utils/ukPostcode");
 const {
   revalidateAppointmentsForCareReceiver,
   autoReassignInvalidatedAppointments,
@@ -139,6 +140,10 @@ exports.createCareReceiver = async (req, res, next) => {
       }
     }
 
+    if (req.body.address?.postcode != null) {
+      req.body.address.postcode = normalizeUkPostcode(req.body.address.postcode);
+    }
+
     // Geocode address
     const { street, city, postcode } = req.body.address;
     const fullAddress = `${street}, ${city} ${postcode}, United Kingdom`;
@@ -255,6 +260,9 @@ exports.updateCareReceiver = async (req, res, next) => {
     // If address changed, re-geocode
     let addressChanged = false;
     if (req.body.address) {
+      if (req.body.address.postcode != null) {
+        req.body.address.postcode = normalizeUkPostcode(req.body.address.postcode);
+      }
       addressChanged =
         req.body.address.street !== careReceiver.address.street ||
         req.body.address.city !== careReceiver.address.city ||
