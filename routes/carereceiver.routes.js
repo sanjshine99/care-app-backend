@@ -13,6 +13,12 @@ const {
   getCareReceiverStats,
   getSuitableCareGivers,
 } = require("../controllers/careReceiverController");
+const {
+  listServiceNotRequiredPeriods,
+  createServiceNotRequiredPeriod,
+  updateServiceNotRequiredPeriod,
+  deleteServiceNotRequiredPeriod,
+} = require("../controllers/serviceNotRequiredPeriodController");
 
 const router = express.Router();
 
@@ -24,6 +30,12 @@ router
   .route("/")
   .get(getAllCareReceivers) // GET /api/carereceivers
   .post(createCareReceiver); // POST /api/carereceivers
+
+// Service not required (specific paths before generic /:id)
+router.get("/:id/service-not-required", listServiceNotRequiredPeriods);
+router.post("/:id/service-not-required", createServiceNotRequiredPeriod);
+router.patch("/:id/service-not-required/:periodId", updateServiceNotRequiredPeriod);
+router.delete("/:id/service-not-required/:periodId", deleteServiceNotRequiredPeriod);
 
 router
   .route("/:id")

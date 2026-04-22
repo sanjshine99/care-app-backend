@@ -20,6 +20,7 @@ const { normalizeTimeToHHMM } = require("../utils/timeUtils");
 const { parseStartOfDayUTC, parseEndOfDayUTC, toDateString, getDayOfWeekUTC, toStartOfDayUTC, toEndOfDayUTC, toUTCDateValue, todayUTC } = require("../utils/dateUtils");
 const { ACTIVE_APPOINTMENT_STATUSES, CALENDAR_VISIBLE_STATUSES } = require("../utils/constants");
 const logger = require("../utils/logger");
+const serviceNotRequiredPeriodService = require("../services/serviceNotRequiredPeriodService");
 
 // =============================================================================
 // SCHEDULE GENERATION (POST ONLY)
@@ -179,12 +180,31 @@ exports.getAllAppointments = async (req, res, next) => {
     const {
       startDate,
       endDate,
-      careGiverId,
-      careReceiverId,
+      careGiverId: rawCareGiverId,
+      careReceiverId: rawCareReceiverId,
       status,
       page = 1,
       limit = 100,
     } = req.query;
+
+    const careGiverId =
+      rawCareGiverId != null && String(rawCareGiverId).trim() !== ""
+        ? String(rawCareGiverId).trim()
+        : undefined;
+    const careReceiverId =
+      rawCareReceiverId != null && String(rawCareReceiverId).trim() !== ""
+        ? String(rawCareReceiverId).trim()
+        : undefined;
+
+    if (careGiverId && careReceiverId) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          message: "Use only one of careGiverId or careReceiverId, not both.",
+          code: "CONFLICTING_FILTERS",
+        },
+      });
+    }
 
     const query = {};
 
@@ -304,6 +324,13 @@ exports.getUnscheduled = async (req, res, next) => {
       .lean();
     const careReceiverIds = careReceivers.map((cr) => cr._id);
 
+    const snrPeriods = await serviceNotRequiredPeriodService.loadOverlappingPeriodsForReceivers(
+      careReceiverIds,
+      start,
+      end,
+    );
+    const snrByReceiver = serviceNotRequiredPeriodService.groupPeriodsByCareReceiver(snrPeriods);
+
     // Only count active appointments — cancelled/needs_reassignment/missed
     // should NOT prevent a visit from appearing as unscheduled
     const activeStatuses = ["scheduled", "in_progress", "completed"];
@@ -362,6 +389,8 @@ exports.getUnscheduled = async (req, res, next) => {
       let expectedCount = 0;
       const details = [];
 
+      const crSnrs = snrByReceiver.get(cr._id.toString()) || [];
+
       for (const date of dates) {
         const dateStr = toDateString(date);
 
@@ -374,6 +403,10 @@ exports.getUnscheduled = async (req, res, next) => {
           );
 
           if (shouldHaveAppointment) {
+            if (serviceNotRequiredPeriodService.dateCoveredByAnyPeriod(crSnrs, date)) {
+              continue;
+            }
+
             expectedCount++;
 
             const visitKey = `${dateStr}-${visit.visitNumber}`;
@@ -850,6 +883,21 @@ exports.findAvailableForManual = async (req, res, next) => {
       });
     }
 
+    const appointmentDayForSnr = parseStartOfDayUTC(date);
+    const snrForFind = await serviceNotRequiredPeriodService.findCoveringPeriod(
+      careReceiverId,
+      appointmentDayForSnr,
+    );
+    if (snrForFind) {
+      return res.status(409).json({
+        success: false,
+        error: {
+          message: "Care receiver has service not required on this date.",
+          code: "SERVICE_NOT_REQUIRED",
+        },
+      });
+    }
+
     console.log("Care Receiver:", careReceiver.name);
     console.log(
       "  Gender Preference:",
@@ -1188,6 +1236,18 @@ exports.createManualAppointment = async (req, res, next) => {
       });
     }
 
+    const appointmentDay = parseStartOfDayUTC(date);
+    const snrBlock = await serviceNotRequiredPeriodService.findCoveringPeriod(careReceiverId, appointmentDay);
+    if (snrBlock) {
+      return res.status(409).json({
+        success: false,
+        error: {
+          message: "Care receiver has service not required on this date. Visits cannot be scheduled.",
+          code: "SERVICE_NOT_REQUIRED",
+        },
+      });
+    }
+
     // Verify care giver exists
     const careGiver = await CareGiver.findById(careGiverId);
     if (!careGiver) {
@@ -1219,7 +1279,7 @@ exports.createManualAppointment = async (req, res, next) => {
     }
 
     // Check for duplicate appointment in same slot
-    const appointmentDate = parseStartOfDayUTC(date);
+    const appointmentDate = appointmentDay;
     const existing = await Appointment.findOne({
       careReceiver: careReceiverId,
       date: appointmentDate,
@@ -1492,11 +1552,57 @@ exports.validateSchedule = async (req, res, next) => {
 
     console.log(`Found ${appointments.length} appointments to validate`);
 
+    const receiverIdsForSnr = [
+      ...new Set(
+        appointments
+          .map((a) => (a.careReceiver && a.careReceiver._id ? a.careReceiver._id : a.careReceiver))
+          .filter(Boolean),
+      ),
+    ];
+    const snrForValidate =
+      receiverIdsForSnr.length > 0
+        ? await serviceNotRequiredPeriodService.loadOverlappingPeriodsForReceivers(
+            receiverIdsForSnr,
+            start,
+            end,
+          )
+        : [];
+    const snrByReceiverValidate =
+      serviceNotRequiredPeriodService.groupPeriodsByCareReceiver(snrForValidate);
+
     const invalidAppointments = [];
     const validAppointments = [];
     let updatedCount = 0;
 
     for (const apt of appointments) {
+      const crRef = apt.careReceiver?._id || apt.careReceiver;
+      const crIdStr = crRef ? crRef.toString() : null;
+      const snrList = crIdStr ? snrByReceiverValidate.get(crIdStr) || [] : [];
+      if (
+        crIdStr &&
+        serviceNotRequiredPeriodService.dateCoveredByAnyPeriod(snrList, apt.date)
+      ) {
+        apt.status = "cancelled";
+        apt.cancellationReason =
+          "Care receiver service not required on this date (schedule validation)";
+        apt.invalidationReason = null;
+        apt.invalidatedAt = null;
+        try {
+          await apt.save();
+          updatedCount++;
+          console.log(
+            `   SNR: Cancelled appointment ${apt._id} for ${apt.careReceiver?.name} on ${toDateString(apt.date)}`,
+          );
+        } catch (saveErr) {
+          if (saveErr.code === 11000) {
+            console.warn(`[Validate] Duplicate key on SNR cancel for ${apt._id}, skipping`);
+            continue;
+          }
+          throw saveErr;
+        }
+        continue;
+      }
+
       const issues = [];
 
       // ========================================

@@ -12,6 +12,10 @@ const TravelCalculator = require("./scheduling/TravelCalculator");
 const VisitService = require("./scheduling/VisitService");
 const CaregiverService = require("./scheduling/CaregiverService");
 const AppointmentService = require("./scheduling/AppointmentService");
+const {
+  loadOverlappingPeriodsForCareReceiver,
+  dateCoveredByAnyPeriod,
+} = require("./serviceNotRequiredPeriodService");
 
 const calculateTravelTime = TravelCalculator.calculateTravelTime.bind(TravelCalculator);
 const calculateDistance = TravelCalculator.calculateDistance.bind(TravelCalculator);
@@ -547,11 +551,23 @@ async function scheduleForCareReceiver(careReceiverId, startDate, endDate) {
 
   const currentDate = new Date(effectiveStart.getTime());
 
+  const serviceNotRequiredPeriods = await loadOverlappingPeriodsForCareReceiver(
+    careReceiver._id,
+    effectiveStart,
+    endDate,
+  );
+
   while (currentDate <= endDate) {
     const dateStr = toDateString(currentDate);
     const dayName = formatDateForLog(currentDate);
 
     console.log(`\n--- Processing Date: ${dateStr} (${dayName}) ---`);
+
+    if (dateCoveredByAnyPeriod(serviceNotRequiredPeriods, currentDate)) {
+      console.log(`[Schedule] Service not required — skipping entire day ${dateStr}`);
+      currentDate.setUTCDate(currentDate.getUTCDate() + 1);
+      continue;
+    }
 
     for (const visit of careReceiver.dailyVisits) {
       if (!isDateInSchedule(

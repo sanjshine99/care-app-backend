@@ -563,6 +563,7 @@ exports.getCareReceiverSchedule = async (req, res, next) => {
     }
 
     const Appointment = require("../models/Appointment");
+    const serviceNotRequiredPeriodService = require("../services/serviceNotRequiredPeriodService");
 
     const query = { careReceiver: req.params.id };
 
@@ -578,6 +579,14 @@ exports.getCareReceiverSchedule = async (req, res, next) => {
       .populate("secondaryCareGiver", "name email phone")
       .sort({ date: 1, startTime: 1 });
 
+    let serviceNotRequiredPeriods = [];
+    if (startDate && endDate) {
+      serviceNotRequiredPeriods = await serviceNotRequiredPeriodService.listByCareReceiver(
+        req.params.id,
+        { startDate, endDate },
+      );
+    }
+
     res.json({
       success: true,
       data: {
@@ -587,6 +596,7 @@ exports.getCareReceiverSchedule = async (req, res, next) => {
           dailyVisits: careReceiver.dailyVisits,
         },
         appointments,
+        serviceNotRequiredPeriods,
       },
     });
   } catch (error) {

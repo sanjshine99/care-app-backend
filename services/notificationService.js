@@ -447,6 +447,30 @@ exports.notifyScheduleExpiring = async (userId, lastScheduledDate, daysRemaining
 };
 
 /**
+ * Notify acting admin when appointments were cancelled due to service-not-required period
+ */
+exports.notifyServiceNotRequiredCancellations = async (
+  userId,
+  { careReceiverName, cancelledCount, startDate, endDate, reasonType },
+) => {
+  const startStr =
+    typeof startDate === "string"
+      ? startDate
+      : moment.utc(startDate).format("YYYY-MM-DD");
+  const endStr =
+    typeof endDate === "string" ? endDate : moment.utc(endDate).format("YYYY-MM-DD");
+
+  await exports.notifySystem(userId, {
+    type: "info",
+    priority: "medium",
+    title: "Visits cancelled — service not required",
+    message: `${cancelledCount} appointment(s) for ${careReceiverName} were cancelled (${startStr}–${endStr}, ${reasonType}).`,
+    actionUrl: "/carereceivers",
+    actionLabel: "View care receivers",
+  });
+};
+
+/**
  * Bulk create notifications for multiple users
  */
 exports.notifyMultipleUsers = async (userIds, notificationData) => {
